@@ -1,0 +1,6 @@
+---
+- name: Syntax-check the MDI sensor performance role
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: mdi_sensor_performance

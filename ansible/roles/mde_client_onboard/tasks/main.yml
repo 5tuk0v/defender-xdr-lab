@@ -1,0 +1,3 @@
+---
+- name: Run optional MDE client onboarding
+  ansible.builtin.include_tasks: artifact.yml

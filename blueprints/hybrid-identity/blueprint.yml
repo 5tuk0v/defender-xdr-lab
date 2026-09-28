@@ -1,0 +1,17 @@
+---
+manifest_version: 1
+id: hybrid-identity
+name: Defender XDR Lab - Hybrid Identity
+description: >-
+  Two-host Active Directory lab for Microsoft Entra Connect Sync, Password Hash
+  Sync, and the Defender for Identity v3 preview sensor on a dedicated sync server.
+version: 0.3.2
+config: range-config.yml
+tags:
+  - active-directory
+  - defender
+  - entra
+  - hybrid-identity
+  - mdi
+  - windows
+  - xdr

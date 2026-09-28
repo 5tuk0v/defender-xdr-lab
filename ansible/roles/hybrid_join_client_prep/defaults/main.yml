@@ -1,0 +1,6 @@
+---
+hybrid_join_client_prep_enabled: true
+# Supply both values to select Microsoft Entra client-side tenant discovery.
+# Leave both empty for a visible local-only skip.
+hybrid_join_tenant_id: ""
+hybrid_join_tenant_name: ""

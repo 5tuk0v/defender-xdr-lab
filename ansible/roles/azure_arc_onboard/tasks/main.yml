@@ -1,0 +1,3 @@
+---
+- name: Run optional Azure Arc onboarding
+  ansible.builtin.include_tasks: artifact.yml

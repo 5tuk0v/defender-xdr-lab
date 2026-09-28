@@ -1,0 +1,79 @@
+---
+- name: Validate Controlled Folder Access policy choice
+  ansible.builtin.assert:
+    that:
+      - controlled_folder_access_policy_state in ['native', 'audit', 'block']
+      - controlled_folder_access_policy_gpo_name | length > 0
+
+- name: Resolve the Ludus domain-administrator context
+  ansible.builtin.set_fact:
+    controlled_folder_access_policy_ludus_host: "{{ ludus | selectattr('vm_name', 'equalto', inventory_hostname) | list | first }}"
+
+- name: Validate the Ludus domain-administrator context
+  ansible.builtin.assert:
+    that:
+      - defaults is mapping
+      - defaults.ad_domain_admin is defined
+      - defaults.ad_domain_admin | length > 0
+      - defaults.ad_domain_admin_password is defined
+      - defaults.ad_domain_admin_password | length > 0
+      - controlled_folder_access_policy_ludus_host.domain.role == 'primary-dc'
+      - controlled_folder_access_policy_ludus_host.domain.fqdn | length > 0
+    fail_msg: The Controlled Folder Access policy requires the primary DC and Ludus defaults domain-administrator credentials.
+  no_log: true
+
+- name: Configure the Controlled Folder Access domain GPO
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory -ErrorAction Stop
+      Import-Module GroupPolicy -ErrorAction Stop
+      if ($env:USERNAME -ine '{{ defaults.ad_domain_admin | replace("'", "''") }}' -or $env:USERDNSDOMAIN -ine '{{ controlled_folder_access_policy_ludus_host.domain.fqdn | replace("'", "''") }}') {
+        throw "GPO mutation is not running as the configured Ludus domain administrator."
+      }
+      $domain = Get-ADDomain -ErrorAction Stop
+      $gpoName = '{{ controlled_folder_access_policy_gpo_name | replace("'", "''") }}'
+      $state = '{{ controlled_folder_access_policy_state }}'
+      $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
+      $changed = $false
+      if ($state -eq 'native') {
+        if ($null -ne $gpo) {
+          if ($gpo.Description -ne 'Role-owned Defender XDR Lab Controlled Folder Access policy.') { throw "Refusing to remove a GPO not owned by this role: $gpoName" }
+          if ($null -ne ((Get-GPInheritance -Target $domain.DistinguishedName).GpoLinks | Where-Object DisplayName -eq $gpoName | Select-Object -First 1)) {
+            Remove-GPLink -Name $gpoName -Target $domain.DistinguishedName -Confirm:$false -ErrorAction Stop
+          }
+          Remove-GPO -Guid $gpo.Id -ErrorAction Stop
+          $changed = $true
+        }
+      } else {
+        if ($null -eq $gpo) {
+          $gpo = New-GPO -Name $gpoName -Comment 'Role-owned Defender XDR Lab Controlled Folder Access policy.' -ErrorAction Stop
+          $changed = $true
+        }
+        if ($null -eq ((Get-GPInheritance -Target $domain.DistinguishedName).GpoLinks | Where-Object DisplayName -eq $gpoName | Select-Object -First 1)) {
+          New-GPLink -Name $gpoName -Target $domain.DistinguishedName -LinkEnabled Yes -ErrorAction Stop | Out-Null
+          $changed = $true
+        }
+        Set-GPPermission -Name $gpoName -TargetName 'Authenticated Users' -TargetType Group -PermissionLevel GpoApply -Replace -ErrorAction Stop
+        $key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\Controlled Folder Access'
+        $value = if ($state -eq 'audit') { 2 } else { 1 }
+        $current = Get-GPRegistryValue -Name $gpoName -Key $key -ValueName 'EnableControlledFolderAccess' -ErrorAction SilentlyContinue
+        if ($null -eq $current -or [int]$current.Value -ne $value) {
+          Set-GPRegistryValue -Name $gpoName -Key $key -ValueName 'EnableControlledFolderAccess' -Type DWord -Value $value -ErrorAction Stop | Out-Null
+          $changed = $true
+        }
+      }
+      $Ansible.Changed = $changed
+      $Ansible.Result = @{ gpo = $gpoName; state = $state; scope = 'domain' }
+  register: controlled_folder_access_policy_result
+  become: true
+  become_method: runas
+  become_user: "{{ defaults.ad_domain_admin }}@{{ controlled_folder_access_policy_ludus_host.domain.fqdn }}"
+  vars:
+    ansible_become_password: "{{ defaults.ad_domain_admin_password }}"
+
+- name: Report Controlled Folder Access policy state
+  ansible.builtin.debug:
+    msg: >-
+      Controlled Folder Access is {{ controlled_folder_access_policy_state }} through
+      {{ controlled_folder_access_policy_gpo_name }}.

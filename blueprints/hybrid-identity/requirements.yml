@@ -1,0 +1,11 @@
+---
+roles:
+  - name: 5tuk0v.ludus_asr_presets
+    version: v0.1.0
+collections:
+  - name: badsectorlabs.ludus_windows_utils
+    version: 1.2.0
+  # The BSL role calls microsoft.ad modules but does not declare the dependency.
+  # Match the Ludus built-in collection version.
+  - name: microsoft.ad
+    version: 1.8.0

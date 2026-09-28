@@ -1,0 +1,6 @@
+---
+- name: Syntax-check the hybrid join client preparation role
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: hybrid_join_client_prep

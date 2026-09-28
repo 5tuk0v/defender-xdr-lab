@@ -1,0 +1,26 @@
+---
+# The role manages only entries bearing its marker in the Windows hosts file.
+sample_submission_sinkhole_enabled: true
+sample_submission_sinkhole_address: 0.0.0.0
+sample_submission_sinkhole_marker: Defender XDR Lab sample-submission sinkhole
+sample_submission_sinkhole_list_version: v1
+sample_submission_sinkhole_canonical_domains:
+  - virustotal.com
+  - www.virustotal.com
+  - bigfiles.virustotal.com
+  - hybrid-analysis.com
+  - www.hybrid-analysis.com
+  - jotti.org
+  - www.jotti.org
+  - virusscan.jotti.org
+  - enterprise.jotti.org
+  - any.run
+  - www.any.run
+  - app.any.run
+  - api.any.run
+  - content.any.run
+  - intelligence.any.run
+  - joesandbox.com
+  - www.joesandbox.com
+sample_submission_sinkhole_additional_domains: []
+sample_submission_sinkhole_excluded_domains: []

@@ -1,0 +1,6 @@
+---
+- name: Syntax-check the hybrid identity scope role
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: hybrid_identity_scope

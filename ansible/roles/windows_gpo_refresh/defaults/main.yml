@@ -1,0 +1,3 @@
+---
+# Synchronize computer policy after the domain GPO-authoring roles have run.
+windows_gpo_refresh_enabled: true

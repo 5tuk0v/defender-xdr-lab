@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  author: 5tuk0v
+  description: Prepare the current Microsoft Defender platform before MDE enrollment
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Windows
+      versions:
+        - all
+dependencies: []

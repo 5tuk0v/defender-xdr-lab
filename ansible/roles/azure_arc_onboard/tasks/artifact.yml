@@ -1,0 +1,178 @@
+---
+- name: Inspect Azure Connected Machine agent state
+  ansible.builtin.raw: >-
+    $agent = Join-Path $env:ProgramFiles 'AzureConnectedMachineAgent\azcmagent.exe';
+    if (-not (Test-Path -LiteralPath $agent)) { 'agent_missing'; exit 0 };
+    $state = & $agent show --json 2>$null;
+    if ($LASTEXITCODE -ne 0) { 'agent_not_connected'; exit 0 };
+    try {
+      if ([string]::IsNullOrWhiteSpace(($state | ConvertFrom-Json).resourceId)) {
+        'agent_not_connected'
+      } else {
+        'connected'
+      }
+    } catch {
+      'agent_not_connected'
+    }
+  register: azure_arc_onboard_initial_agent_state
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Classify Azure Connected Machine agent state
+  ansible.builtin.set_fact:
+    azure_arc_onboard_already_connected: >-
+      {{ azure_arc_onboard_initial_agent_state.stdout | trim == 'connected' }}
+  changed_when: false
+
+- name: Check for Azure Arc portal-generated onboarding script
+  ansible.builtin.stat:
+    path: "{{ azure_arc_onboard_controller_artifact_path }}"
+  delegate_to: localhost
+  register: azure_arc_onboard_artifact
+  changed_when: false
+
+- name: Report existing Azure Arc connection
+  ansible.builtin.debug:
+    msg:
+      cloud_onboarding_status: already_connected
+      cloud_onboarding_changes_cloud: false
+      cloud_onboarding_next_action: Azure Arc is already connected; the script was not run.
+  when: azure_arc_onboard_already_connected
+
+- name: Report missing Azure Arc onboarding script
+  ansible.builtin.debug:
+    msg:
+      cloud_onboarding_status: not_configured
+      cloud_onboarding_changes_cloud: false
+      cloud_onboarding_next_action: >-
+        Create the short-lived, resource-group-scoped Arc service principal,
+        generate OnboardingScript.ps1, and place it in the documented protected
+        controller directory outside the installed role.
+  when:
+    - not azure_arc_onboard_already_connected
+    - not azure_arc_onboard_artifact.stat.exists
+
+- name: Run Azure Arc portal-generated onboarding script
+  when:
+    - not azure_arc_onboard_already_connected
+    - azure_arc_onboard_artifact.stat.exists
+  block:
+    - name: Copy Azure Arc onboarding script to target
+      ansible.windows.win_copy:
+        src: "{{ azure_arc_onboard_controller_artifact_path }}"
+        dest: "{{ azure_arc_onboard_guest_artifact_path }}"
+      register: azure_arc_onboard_copy
+      failed_when: false
+      no_log: true
+
+    - name: Execute Azure Arc onboarding script
+      ansible.windows.win_shell: >-
+        & '{{ azure_arc_onboard_guest_artifact_path }}';
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      register: azure_arc_onboard_execution
+      failed_when: false
+      when: not (azure_arc_onboard_copy.failed | default(false))
+      no_log: true
+
+  always:
+    - name: Remove temporary Azure Arc onboarding script from target
+      ansible.windows.win_file:
+        path: "{{ azure_arc_onboard_guest_artifact_path }}"
+        state: absent
+      register: azure_arc_onboard_cleanup
+      failed_when: false
+      no_log: true
+
+- name: Verify temporary Azure Arc onboarding script removal
+  ansible.windows.win_stat:
+    path: "{{ azure_arc_onboard_guest_artifact_path }}"
+  register: azure_arc_onboard_guest_artifact
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - not azure_arc_onboard_already_connected
+    - azure_arc_onboard_artifact.stat.exists
+
+- name: Inspect Azure Connected Machine agent state after onboarding
+  ansible.builtin.raw: >-
+    $agent = Join-Path $env:ProgramFiles 'AzureConnectedMachineAgent\azcmagent.exe';
+    if (-not (Test-Path -LiteralPath $agent)) { 'agent_missing'; exit 0 };
+    $state = & $agent show --json 2>$null;
+    if ($LASTEXITCODE -ne 0) { 'agent_not_connected'; exit 0 };
+    try {
+      if ([string]::IsNullOrWhiteSpace(($state | ConvertFrom-Json).resourceId)) {
+        'agent_not_connected'
+      } else {
+        'connected'
+      }
+    } catch {
+      'agent_not_connected'
+    }
+  register: azure_arc_onboard_final_agent_state
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - not azure_arc_onboard_already_connected
+    - azure_arc_onboard_artifact.stat.exists
+
+- name: Classify Azure Arc onboarding result without secret output
+  ansible.builtin.set_fact:
+    azure_arc_onboard_safe_result:
+      copy_succeeded: >-
+        {{ not (azure_arc_onboard_copy.failed | default(true)) }}
+      execution_exit_code: >-
+        {{ azure_arc_onboard_execution.rc | default('not_run') }}
+      agent_state: >-
+        {{ azure_arc_onboard_final_agent_state.stdout | default('probe_failed') | trim }}
+      guest_artifact_removed: >-
+        {{ not (azure_arc_onboard_guest_artifact.stat.exists | default(true)) }}
+  changed_when: false
+  no_log: true
+  when:
+    - not azure_arc_onboard_already_connected
+    - azure_arc_onboard_artifact.stat.exists
+
+- name: Report failed Azure Arc onboarding safely
+  ansible.builtin.debug:
+    msg:
+      cloud_onboarding_status: failed
+      copy_succeeded: "{{ azure_arc_onboard_safe_result.copy_succeeded }}"
+      execution_exit_code: "{{ azure_arc_onboard_safe_result.execution_exit_code }}"
+      agent_state: "{{ azure_arc_onboard_safe_result.agent_state }}"
+      guest_artifact_removed: "{{ azure_arc_onboard_safe_result.guest_artifact_removed }}"
+      cloud_onboarding_next_action: >-
+        If guest_artifact_removed is false, remove the guest artifact first.
+        Then check the Azure Connected Machine agent logs and Arc service
+        principal validity, replace the controller artifact if needed, and
+        reapply this role. No cloud or agent state was rolled back.
+  when:
+    - azure_arc_onboard_safe_result is defined
+    - >-
+      azure_arc_onboard_safe_result.agent_state != 'connected' or
+      not (azure_arc_onboard_safe_result.guest_artifact_removed | bool)
+
+- name: Stop after failed Azure Arc onboarding
+  ansible.builtin.fail:
+    msg: >-
+      Azure Arc onboarding failed safely. Review the preceding sanitized result;
+      secret command output remains suppressed.
+  when:
+    - azure_arc_onboard_safe_result is defined
+    - >-
+      azure_arc_onboard_safe_result.agent_state != 'connected' or
+      not (azure_arc_onboard_safe_result.guest_artifact_removed | bool)
+
+- name: Report successful Azure Arc onboarding
+  ansible.builtin.debug:
+    msg:
+      cloud_onboarding_status: connected
+      cloud_onboarding_changes_cloud: true
+      execution_exit_code: "{{ azure_arc_onboard_safe_result.execution_exit_code }}"
+      guest_artifact_removed: "{{ azure_arc_onboard_safe_result.guest_artifact_removed }}"
+  when:
+    - azure_arc_onboard_safe_result is defined
+    - azure_arc_onboard_safe_result.agent_state == 'connected'
+    - azure_arc_onboard_safe_result.guest_artifact_removed | bool

@@ -1,0 +1,257 @@
+---
+- name: Validate the hybrid identity scope configuration
+  ansible.builtin.assert:
+    that:
+      - hybrid_identity_scope_group | trim | length > 0
+      - hybrid_identity_scope_member_groups is sequence
+      - hybrid_identity_scope_member_groups is not string
+      - hybrid_identity_scope_member_groups | length > 0
+      - hybrid_identity_scope_member_groups | select('string') | list | length == hybrid_identity_scope_member_groups | length
+      - hybrid_identity_scope_member_groups | map('trim') | reject('equalto', '') | list | length == hybrid_identity_scope_member_groups | length
+      - hybrid_identity_scope_member_groups | unique | length == hybrid_identity_scope_member_groups | length
+      - hybrid_identity_scope_group not in hybrid_identity_scope_member_groups
+      - hybrid_identity_scope_computers is sequence
+      - hybrid_identity_scope_computers is not string
+      - ludus_users is sequence
+      - ludus_users is not string
+    fail_msg: >-
+      Supply one non-empty scope group, unique direct member groups, and the
+      ludus_users fixture.
+
+- name: Validate declared hybrid scope computers
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.name is defined
+      - item.name | trim | length > 0
+      - item.path is defined
+      - item.path | trim | length > 0
+      - item.path | trim is match('(?i)^OU=.+,DC=.+')
+    fail_msg: >-
+      Each hybrid_identity_scope_computers entry requires a non-empty name and
+      destination OU distinguished name.
+  loop: "{{ hybrid_identity_scope_computers }}"
+  loop_control:
+    label: "{{ item.name | default('invalid computer fixture') }}"
+
+- name: Validate unique hybrid scope computer names
+  ansible.builtin.assert:
+    that:
+      - hybrid_identity_scope_computers | map(attribute='name') | map('lower') | unique | length == hybrid_identity_scope_computers | length
+    fail_msg: hybrid_identity_scope_computers contains duplicate computer names.
+
+- name: Validate the optional operator-supplied hybrid UPN suffix
+  ansible.builtin.assert:
+    that:
+      - hybrid_identity_upn_suffix | trim | lower != ludus_domain_fqdn | lower
+      - hybrid_identity_upn_suffix | trim is match('^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$')
+    fail_msg: >-
+      Supply a routable verified Entra domain suffix or leave it empty.
+  when: hybrid_identity_upn_suffix | trim | length > 0
+
+- name: Initialize the declared hybrid scope user set
+  ansible.builtin.set_fact:
+    hybrid_identity_scope_resolved_users: []
+  changed_when: false
+
+- name: Derive hybrid users from the declared sync-scope membership
+  ansible.builtin.set_fact:
+    hybrid_identity_scope_resolved_users: >-
+      {{ hybrid_identity_scope_resolved_users + [item.name] }}
+  loop: "{{ ludus_users }}"
+  loop_control:
+    label: "{{ item.name | default('invalid user fixture') }}"
+  when:
+    - item is mapping
+    - item.name is defined
+    - item.groups is defined
+    - item.groups is sequence
+    - item.groups is not string
+    - hybrid_identity_scope_group in item.groups
+  changed_when: false
+
+- name: Validate the derived hybrid scope user set
+  ansible.builtin.assert:
+    that:
+      - hybrid_identity_scope_resolved_users | length > 0
+      - hybrid_identity_scope_resolved_users | unique | length == hybrid_identity_scope_resolved_users | length
+    fail_msg: >-
+      No unique ludus_users entries directly reference
+      '{{ hybrid_identity_scope_group }}'.
+
+- name: Move declared hybrid computers into their synchronization OUs
+  microsoft.ad.computer:
+    identity: "{{ item.name }}"
+    path: "{{ item.path }}"
+    state: present
+  loop: "{{ hybrid_identity_scope_computers }}"
+  loop_control:
+    label: "{{ item.name }} -> {{ item.path }}"
+  vars:
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: '{{ ludus_domain_fqdn }}\{{ defaults.ad_domain_admin }}'
+    ansible_become_password: "{{ defaults.ad_domain_admin_password }}"
+    ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+
+- name: Reconcile the sync scope and optional hybrid UPN suffix
+  ansible.windows.win_powershell:
+    script: |
+      [CmdletBinding()]
+      param (
+        [String]$Suffix,
+        [String]$ScopeGroup,
+        [String[]]$DeclaredUsers,
+        [String[]]$DeclaredMemberGroups,
+        [String[]]$DeclaredComputers
+      )
+
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory
+      $suffixValue = $Suffix.Trim().ToLowerInvariant()
+      $changed = $false
+      $scopeGroupObject = Get-ADGroup -Identity $ScopeGroup -ErrorAction Stop
+      $declaredGroups = @(
+        foreach ($groupName in $DeclaredMemberGroups) {
+          Get-ADGroup -Identity $groupName -ErrorAction Stop
+        }
+      )
+      $declaredComputerObjects = @(
+        foreach ($computerName in $DeclaredComputers) {
+          Get-ADComputer -Identity $computerName -ErrorAction Stop
+        }
+      )
+
+      $currentMembers = @(Get-ADGroupMember -Identity $scopeGroupObject)
+      foreach ($memberGroup in $declaredGroups) {
+        if ($memberGroup.DistinguishedName -notin @($currentMembers.DistinguishedName)) {
+          Add-ADGroupMember `
+            -Identity $scopeGroupObject.DistinguishedName `
+            -Members $memberGroup.DistinguishedName
+          $changed = $true
+        }
+      }
+      foreach ($computer in $declaredComputerObjects) {
+        if ($computer.DistinguishedName -notin @($currentMembers.DistinguishedName)) {
+          Add-ADGroupMember `
+            -Identity $scopeGroupObject.DistinguishedName `
+            -Members $computer.DistinguishedName
+          $changed = $true
+        }
+      }
+
+      $verifiedMembers = @(Get-ADGroupMember -Identity $scopeGroupObject)
+      $scopeUsers = @(
+        $verifiedMembers |
+          Where-Object { $_.objectClass -eq 'user' } |
+          ForEach-Object {
+            Get-ADUser -Identity $_.DistinguishedName -Properties UserPrincipalName
+          }
+      )
+      if ($scopeUsers.Count -eq 0) {
+        throw "Scope group '$ScopeGroup' has no direct user members."
+      }
+      $declaredUserNames = @($DeclaredUsers | Sort-Object -Unique)
+      $actualUserNames = @($scopeUsers.SamAccountName | Sort-Object -Unique)
+      $membershipDifference = @(
+        Compare-Object -ReferenceObject $declaredUserNames -DifferenceObject $actualUserNames
+      )
+      if ($membershipDifference.Count -gt 0) {
+        throw "Declared ludus_users and direct AD user membership differ for '$ScopeGroup'."
+      }
+
+      $actualGroups = @(
+        $verifiedMembers |
+          Where-Object { $_.objectClass -eq 'group' } |
+          ForEach-Object { Get-ADGroup -Identity $_.DistinguishedName }
+      )
+      $declaredGroupNames = @($declaredGroups.SamAccountName | Sort-Object -Unique)
+      $actualGroupNames = @($actualGroups.SamAccountName | Sort-Object -Unique)
+      $groupDifference = @(
+        Compare-Object -ReferenceObject $declaredGroupNames -DifferenceObject $actualGroupNames
+      )
+      if ($groupDifference.Count -gt 0) {
+        throw "Declared and direct AD group membership differ for '$ScopeGroup'."
+      }
+      $actualComputers = @(
+        $verifiedMembers |
+          Where-Object { $_.objectClass -eq 'computer' } |
+          ForEach-Object { Get-ADComputer -Identity $_.DistinguishedName }
+      )
+      $declaredComputerNames = @($declaredComputerObjects.SamAccountName | Sort-Object -Unique)
+      $actualComputerNames = @($actualComputers.SamAccountName | Sort-Object -Unique)
+      $computerDifference = @(
+        Compare-Object -ReferenceObject $declaredComputerNames -DifferenceObject $actualComputerNames
+      )
+      if ($computerDifference.Count -gt 0) {
+        throw "Declared and direct AD computer membership differ for '$ScopeGroup'."
+      }
+      $otherMembers = @(
+        $verifiedMembers | Where-Object { $_.objectClass -notin @('user', 'group', 'computer') }
+      )
+      if ($otherMembers.Count -gt 0) {
+        throw "Scope group '$ScopeGroup' contains unsupported direct object types."
+      }
+
+      $results = @()
+      if ($suffixValue.Length -gt 0) {
+        $forest = Get-ADForest
+        if ($suffixValue -notin @($forest.UPNSuffixes)) {
+          Set-ADForest -Identity $forest.Name -UPNSuffixes @{ Add = $suffixValue }
+          $changed = $true
+        }
+
+        foreach ($user in $scopeUsers) {
+          $expectedUpn = '{0}@{1}' -f $user.SamAccountName, $suffixValue
+          $collision = Get-ADObject `
+            -LDAPFilter "(userPrincipalName=$expectedUpn)" `
+            -Properties objectGUID `
+            -ErrorAction SilentlyContinue
+          if ($collision -and $collision.ObjectGUID -ne $user.ObjectGUID) {
+            throw "UPN '$expectedUpn' is already assigned to another object."
+          }
+          if ($user.UserPrincipalName -ne $expectedUpn) {
+            Set-ADUser -Identity $user -UserPrincipalName $expectedUpn
+            $changed = $true
+          }
+          $verified = Get-ADUser -Identity $user.DistinguishedName -Properties UserPrincipalName
+          if ($verified.UserPrincipalName -ne $expectedUpn) {
+            throw "UPN validation failed for '$($user.SamAccountName)'."
+          }
+          $results += $verified.UserPrincipalName
+        }
+
+        $verifiedForest = Get-ADForest
+        if ($suffixValue -notin @($verifiedForest.UPNSuffixes)) {
+          throw "Forest UPN suffix '$suffixValue' did not validate."
+        }
+      }
+
+      $Ansible.Result = @{
+        suffix = $suffixValue
+        scope_group = $scopeGroupObject.SamAccountName
+        direct_users = $actualUserNames
+        direct_groups = $actualGroupNames
+        direct_computers = $actualComputerNames
+        user_principal_names = $results
+      }
+      $Ansible.Changed = $changed
+    parameters:
+      Suffix: "{{ hybrid_identity_upn_suffix }}"
+      ScopeGroup: "{{ hybrid_identity_scope_group }}"
+      DeclaredUsers: "{{ hybrid_identity_scope_resolved_users }}"
+      DeclaredMemberGroups: "{{ hybrid_identity_scope_member_groups }}"
+      DeclaredComputers: "{{ hybrid_identity_scope_computers | map(attribute='name') | list }}"
+  vars:
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: '{{ ludus_domain_fqdn }}\{{ defaults.ad_domain_admin }}'
+    ansible_become_password: "{{ defaults.ad_domain_admin_password }}"
+    ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+
+- name: Report that optional hybrid UPN automation is disabled
+  ansible.builtin.debug:
+    msg: >-
+      hybrid_identity_upn_suffix is empty. The sync scope was reconciled, but
+      set the verified suffix on its users before Connect activation.
+  when: hybrid_identity_upn_suffix | trim | length == 0

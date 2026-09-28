@@ -1,0 +1,18 @@
+---
+manifest_version: 1
+id: hybrid-join
+name: Defender XDR Lab - Hybrid Join
+description: >-
+  Three-host hybrid identity lab with targeted Windows 11 Microsoft Entra
+  hybrid join, Primary Refresh Token validation, and MDI v3 preview coverage.
+version: 0.2.2
+config: range-config.yml
+tags:
+  - active-directory
+  - defender
+  - entra
+  - hybrid-identity
+  - hybrid-join
+  - mdi
+  - windows
+  - xdr

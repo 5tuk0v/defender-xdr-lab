@@ -1,0 +1,16 @@
+---
+manifest_version: 1
+id: standard
+name: Defender XDR Lab - Standard
+description: >-
+  Four-host Active Directory lab with matched EDR-negative and MDE-positive
+  Windows client endpoints, Microsoft 365 Apps, server MDE, and MDI.
+version: 2.0.2
+config: range-config.yml
+tags:
+  - active-directory
+  - defender
+  - mde
+  - mdi
+  - windows
+  - xdr

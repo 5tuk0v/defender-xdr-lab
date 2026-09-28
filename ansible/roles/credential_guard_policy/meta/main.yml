@@ -1,0 +1,10 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: credential_guard_policy
+  author: 5tuk0v
+  description: Native-first Credential Guard member-computer GPO policy
+  license: MIT
+  min_ansible_version: "2.16"
+collections:
+  - ansible.windows

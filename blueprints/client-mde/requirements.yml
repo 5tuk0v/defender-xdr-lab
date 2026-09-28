@@ -1,0 +1,5 @@
+---
+roles:
+  - name: 5tuk0v.ludus_asr_presets
+    version: v0.1.0
+collections: []

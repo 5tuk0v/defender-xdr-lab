@@ -1,0 +1,4 @@
+---
+# Optional protection only. Native leaves the policy unconfigured.
+controlled_folder_access_policy_state: native
+controlled_folder_access_policy_gpo_name: Defender XDR Lab - Controlled Folder Access

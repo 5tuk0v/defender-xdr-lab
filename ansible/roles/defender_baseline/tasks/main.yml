@@ -1,0 +1,169 @@
+---
+- name: Validate Defender baseline variables
+  ansible.builtin.assert:
+    that:
+      - defender_baseline_enabled is boolean
+      - defender_baseline_gpo_name | length > 0
+
+- name: Resolve the Ludus domain-administrator context
+  ansible.builtin.set_fact:
+    defender_baseline_ludus_host: "{{ ludus | selectattr('vm_name', 'equalto', inventory_hostname) | list | first }}"
+
+- name: Validate the Ludus domain-administrator context
+  ansible.builtin.assert:
+    that:
+      - defaults is mapping
+      - defaults.ad_domain_admin is defined
+      - defaults.ad_domain_admin | length > 0
+      - defaults.ad_domain_admin_password is defined
+      - defaults.ad_domain_admin_password | length > 0
+      - defender_baseline_ludus_host.domain.role == 'primary-dc'
+      - defender_baseline_ludus_host.domain.fqdn | length > 0
+    fail_msg: The Defender baseline requires the primary DC and Ludus defaults domain-administrator credentials.
+  no_log: true
+
+- name: Configure the domain Defender baseline GPO
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory -ErrorAction Stop
+      Import-Module GroupPolicy -ErrorAction Stop
+      if ($env:USERNAME -ine '{{ defaults.ad_domain_admin | replace("'", "''") }}' -or $env:USERDNSDOMAIN -ine '{{ defender_baseline_ludus_host.domain.fqdn | replace("'", "''") }}') {
+        throw "GPO mutation is not running as the configured Ludus domain administrator."
+      }
+      $gpoName = '{{ defender_baseline_gpo_name | replace("'", "''") }}'
+      $domain = Get-ADDomain -ErrorAction Stop
+      $gpServer = $env:COMPUTERNAME
+      $changed = $false
+      function Invoke-GpoRegistryOperation {
+        [CmdletBinding()]
+        param(
+          [Parameter(Mandatory)]
+          [ScriptBlock]$Operation,
+          [Parameter(Mandatory)]
+          [String]$Description
+        )
+        $maximumAttempts = 4
+        for ($attempt = 1; $attempt -le $maximumAttempts; $attempt++) {
+          try {
+            return (& $Operation)
+          } catch {
+            $isAccessDenied = (
+              $_.Exception.HResult -eq -2147024891 -or
+              $_.Exception.Message -match '0x80070005|Access is denied'
+            )
+            if (-not $isAccessDenied -or $attempt -eq $maximumAttempts) {
+              throw
+            }
+            $delaySeconds = 1 -shl ($attempt - 1)
+            Write-Warning ((
+              "Transient access denial during {0}; retrying in {1} second(s) " +
+              "(attempt {2} of {3})."
+            ) -f
+              $Description, $delaySeconds, ($attempt + 1), $maximumAttempts
+            )
+            Start-Sleep -Seconds $delaySeconds
+          }
+        }
+      }
+      $gpo = Get-GPO -Name $gpoName -Domain $domain.DNSRoot -Server $gpServer -ErrorAction SilentlyContinue
+      if ($null -eq $gpo) {
+        $gpo = New-GPO -Name $gpoName -Domain $domain.DNSRoot -Server $gpServer -Comment 'Role-owned Defender XDR Lab Antivirus baseline aligned with Microsoft guidance.' -ErrorAction Stop
+        $changed = $true
+      }
+      if ($null -eq ((Get-GPInheritance -Target $domain.DistinguishedName -Domain $domain.DNSRoot -Server $gpServer).GpoLinks | Where-Object DisplayName -eq $gpoName | Select-Object -First 1)) {
+        New-GPLink -Name $gpoName -Target $domain.DistinguishedName -Domain $domain.DNSRoot -Server $gpServer -LinkEnabled Yes -ErrorAction Stop | Out-Null
+        $changed = $true
+      }
+      Set-GPPermission -Name $gpoName -Domain $domain.DNSRoot -Server $gpServer -TargetName 'Domain Admins' -TargetType Group -PermissionLevel GpoEditDeleteModifySecurity -Replace -ErrorAction Stop
+      Set-GPPermission -Name $gpoName -Domain $domain.DNSRoot -Server $gpServer -TargetName 'Authenticated Users' -TargetType Group -PermissionLevel GpoApply -Replace -ErrorAction Stop
+      $domainAdminsPermission = Get-GPPermission -Name $gpoName -Domain $domain.DNSRoot -Server $gpServer -TargetName 'Domain Admins' -TargetType Group -ErrorAction Stop
+      if ($domainAdminsPermission.Permission -ne 'GpoEditDeleteModifySecurity') {
+        throw "Domain Admins does not have GpoEditDeleteModifySecurity on '$gpoName'."
+      }
+      $settings = @(
+        @{ Label = 'real-time protection'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'; Name = 'DisableRealtimeMonitoring'; Value = 0 },
+        @{ Label = 'behavior monitoring'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'; Name = 'DisableBehaviorMonitoring'; Value = 0 },
+        @{ Label = 'IOAV protection'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'; Name = 'DisableIOAVProtection'; Value = 0 },
+        @{ Label = 'script scanning'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'; Name = 'DisableScriptScanning'; Value = 0 },
+        @{ Label = 'cloud protection reporting'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'; Name = 'SpynetReporting'; Value = 2 },
+        @{ Label = 'cloud block level'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\MpEngine'; Name = 'MpCloudBlockLevel'; Value = 2 },
+        @{ Label = 'cloud block timeout'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\MpEngine'; Name = 'MpBafsExtendedTimeout'; Value = 50 },
+        @{ Label = 'PUA protection'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender'; Name = 'PUAProtection'; Value = 1 },
+        @{ Label = 'network protection Windows Server opt-in'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\Network Protection'; Name = 'AllowNetworkProtectionOnWinServer'; Value = 1 },
+        @{ Label = 'network protection Windows Server datagram processing'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\NIS\Consumers\IPS'; Name = 'AllowDatagramProcessingOnWinServer'; Value = 0 },
+        @{ Label = 'network protection'; Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\Network Protection'; Name = 'EnableNetworkProtection'; Value = 1 }
+      )
+      foreach ($setting in $settings) {
+        $current = Get-GPRegistryValue -Name $gpoName -Domain $domain.DNSRoot -Server $gpServer -Key $setting.Key -ValueName $setting.Name -ErrorAction SilentlyContinue
+        if ('{{ defender_baseline_enabled | lower }}' -eq 'true') {
+          if ($null -eq $current -or [int]$current.Value -ne $setting.Value) {
+            try {
+              Invoke-GpoRegistryOperation -Description "write of $($setting.Label)" -Operation {
+                Set-GPRegistryValue -Guid $gpo.Id -Domain $domain.DNSRoot -Server $gpServer -Key $setting.Key -ValueName $setting.Name -Type DWord -Value $setting.Value -ErrorAction Stop | Out-Null
+              }
+              $written = Invoke-GpoRegistryOperation -Description "verification of $($setting.Label)" -Operation {
+                Get-GPRegistryValue -Guid $gpo.Id -Domain $domain.DNSRoot -Server $gpServer -Key $setting.Key -ValueName $setting.Name -ErrorAction Stop
+              }
+              if ($null -eq $written -or [int]$written.Value -ne $setting.Value) {
+                throw "GPO write verification failed for $($setting.Label)."
+              }
+            } catch {
+              $originalError = $_.Exception.Message
+              try {
+                $gpoPermissions = @(Get-GPPermission -Name $gpoName -Domain $domain.DNSRoot -Server $gpServer -All -ErrorAction Stop | Select-Object -Property Permission, Inherited, Trustee)
+              } catch {
+                $gpoPermissions = "unavailable: $($_.Exception.Message)"
+              }
+              $adAclPath = "AD:\CN={$($gpo.Id)},CN=Policies,CN=System,$($domain.DistinguishedName)"
+              $sysvolPath = "\\$gpServer\SYSVOL\$($domain.DNSRoot)\Policies\{$($gpo.Id)}"
+              try {
+                $adAcl = @((Get-Acl -Path $adAclPath -ErrorAction Stop).Access | Select-Object -Property IdentityReference, AccessControlType, ActiveDirectoryRights, IsInherited)
+              } catch {
+                $adAcl = "unavailable: $($_.Exception.Message)"
+              }
+              try {
+                $sysvolAcl = @((Get-Acl -Path $sysvolPath -ErrorAction Stop).Access | Select-Object -Property IdentityReference, AccessControlType, FileSystemRights, IsInherited)
+              } catch {
+                $sysvolAcl = "unavailable: $($_.Exception.Message)"
+              }
+              $diagnostics = [ordered]@{
+                setting_label = $setting.Label
+                registry_key = $setting.Key
+                registry_value = $setting.Name
+                requested_value = $setting.Value
+                gpo_id = $gpo.Id.Guid
+                domain = $domain.DNSRoot
+                server = $gpServer
+                identity = (whoami)
+                user_dns_domain = $env:USERDNSDOMAIN
+                logon_server = $env:LOGONSERVER
+                gpo_permissions = $gpoPermissions
+                ad_acl = $adAcl
+                sysvol_path = $sysvolPath
+                sysvol_acl = $sysvolAcl
+              }
+              $diagnosticJson = $diagnostics | ConvertTo-Json -Compress -Depth 5
+              throw "Defender baseline GPO write failed. diagnostics=$diagnosticJson; original_error=$originalError"
+            }
+            $changed = $true
+          }
+        } elseif ($null -ne $current) {
+          Invoke-GpoRegistryOperation -Description "removal of $($setting.Label)" -Operation {
+            Remove-GPRegistryValue -Guid $gpo.Id -Domain $domain.DNSRoot -Server $gpServer -Key $setting.Key -ValueName $setting.Name -ErrorAction Stop
+          }
+          $changed = $true
+        }
+      }
+      $Ansible.Changed = $changed
+      $Ansible.Result = @{ gpo = $gpoName; scope = 'Authenticated Users'; domain = $domain.DNSRoot }
+  register: defender_baseline_result
+  become: true
+  become_method: runas
+  become_user: "{{ defaults.ad_domain_admin }}@{{ defender_baseline_ludus_host.domain.fqdn }}"
+  vars:
+    ansible_become_password: "{{ defaults.ad_domain_admin_password }}"
+
+- name: Report Defender baseline GPO state
+  ansible.builtin.debug:
+    msg: Defender baseline is {{ 'enabled' if defender_baseline_enabled else 'native' }} for all domain computers through {{ defender_baseline_gpo_name }}.

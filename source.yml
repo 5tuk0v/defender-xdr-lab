@@ -1,0 +1,7 @@
+manifest_version: 1
+name: Defender XDR Lab for Ludus
+description: Defender XDR lab blueprints for client-only and server endpoint comparison, hybrid identity and join, vulnerable AD CS scenarios, and an integrated five-host lab.
+authors:
+  - 5tuk0v
+homepage: https://github.com/5tuk0v/defender-xdr-lab
+license: MIT

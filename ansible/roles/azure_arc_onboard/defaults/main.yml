@@ -1,0 +1,6 @@
+---
+# The role clearly skips when the Azure Arc portal-generated script is absent.
+# It uses no Azure CLI, session cache, or scope file.
+azure_arc_onboard_controller_artifact_path: >-
+  {{ role_path | dirname | dirname }}/defender-xdr-lab-protected/OnboardingScript.ps1
+azure_arc_onboard_guest_artifact_path: C:\\Windows\\Temp\\DefenderXdrArcOnboarding.ps1

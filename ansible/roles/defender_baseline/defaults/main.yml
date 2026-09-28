@@ -1,0 +1,3 @@
+---
+defender_baseline_enabled: true
+defender_baseline_gpo_name: Defender XDR Lab - Antivirus Baseline

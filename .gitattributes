@@ -1,0 +1,3 @@
+# Private maintainer instructions and current status stay out of public archives.
+AGENTS.md export-ignore
+PROJECT_STATUS.md export-ignore

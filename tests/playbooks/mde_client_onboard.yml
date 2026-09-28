@@ -1,0 +1,6 @@
+---
+- name: Syntax-check the MDE client onboarding role
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: mde_client_onboard

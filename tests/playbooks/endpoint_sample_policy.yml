@@ -1,0 +1,6 @@
+---
+- name: Syntax-check the source-local endpoint sample-policy GPO role
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: endpoint_sample_policy

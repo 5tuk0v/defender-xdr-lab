@@ -1,0 +1,18 @@
+---
+manifest_version: 1
+id: adcs-mdi
+name: Defender XDR Lab - Vulnerable AD CS and MDI
+description: >-
+  Two-host Active Directory Certificate Services scenario with the Bad Sector
+  Labs ESC vulnerabilities, Defender for Servers, and MDI v3 on the domain
+  controller and dedicated certification authority.
+version: 0.3.3
+config: range-config.yml
+tags:
+  - active-directory
+  - adcs
+  - defender
+  - mdi
+  - pki
+  - windows
+  - xdr

@@ -1,0 +1,9 @@
+---
+# Install Microsoft 365 Apps for enterprise from Microsoft's CDN with the Office
+# Deployment Tool. This role deliberately has no activation or tenant interface.
+microsoft_365_apps_enabled: true
+microsoft_365_apps_product_id: O365ProPlusRetail
+microsoft_365_apps_edition: '64'
+microsoft_365_apps_channel: MonthlyEnterprise
+microsoft_365_apps_language: en-us
+microsoft_365_apps_odt_url: https://officecdn.microsoft.com/pr/wsus/setup.exe

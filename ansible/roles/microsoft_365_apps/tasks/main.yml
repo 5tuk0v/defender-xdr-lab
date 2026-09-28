@@ -1,0 +1,136 @@
+---
+- name: Validate Microsoft 365 Apps role variables
+  ansible.builtin.assert:
+    that:
+      - microsoft_365_apps_enabled is boolean
+      - microsoft_365_apps_product_id == 'O365ProPlusRetail'
+      - microsoft_365_apps_edition == '64'
+      - microsoft_365_apps_channel in ['Current', 'MonthlyEnterprise', 'SemiAnnualEnterprise', 'SemiAnnualEnterprisePreview']
+      - microsoft_365_apps_language is match('^[a-z]{2,3}-[a-z]{2,4}$')
+      - microsoft_365_apps_odt_url is match('^https://officecdn\.microsoft\.com/')
+    fail_msg: >-
+      Microsoft 365 Apps supports only the reviewed enterprise, 64-bit ODT
+      configuration and a Microsoft Office CDN bootstrapper URL.
+
+- name: Inspect existing Click-to-Run Office installation
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $configurationPath = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+      $configuration = Get-ItemProperty -Path $configurationPath -ErrorAction SilentlyContinue
+      $products = @()
+      if ($null -ne $configuration -and $null -ne $configuration.ProductReleaseIds) {
+        $products = @($configuration.ProductReleaseIds -split ',' | Where-Object { $_ })
+      }
+      $msiOffice = @(
+        Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+          'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+          Where-Object { $_.DisplayName -match '^Microsoft (Office|365)' } |
+          Select-Object -ExpandProperty DisplayName
+      )
+      $Ansible.Result = @{
+        products = $products
+        platform = $configuration.Platform
+        version = $configuration.VersionToReport
+        channel = $configuration.UpdateChannel
+        client_culture = $configuration.ClientCulture
+        msi_office = $msiOffice
+      }
+      $Ansible.Changed = $false
+  changed_when: false
+  register: microsoft_365_apps_existing
+
+- name: Refuse to alter an unrelated Office installation
+  ansible.builtin.assert:
+    that:
+      - >-
+        microsoft_365_apps_product_id in microsoft_365_apps_existing.result.products
+        or (
+          (microsoft_365_apps_existing.result.products | length == 0)
+          and (microsoft_365_apps_existing.result.msi_office | length == 0)
+        )
+    fail_msg: >-
+      Existing Office products do not include {{ microsoft_365_apps_product_id }}.
+      This role never removes or converts an existing Office installation.
+  when: microsoft_365_apps_enabled
+
+- name: Install Microsoft 365 Apps with the Office Deployment Tool
+  when:
+    - microsoft_365_apps_enabled
+    - microsoft_365_apps_product_id not in microsoft_365_apps_existing.result.products
+  block:
+    - name: Create an isolated Office Deployment Tool workspace
+      ansible.windows.win_tempfile:
+        state: directory
+        suffix: defender-xdr-m365-apps
+      register: microsoft_365_apps_workspace
+
+    - name: Download the current Office Deployment Tool bootstrapper
+      ansible.windows.win_get_url:
+        url: "{{ microsoft_365_apps_odt_url }}"
+        dest: "{{ microsoft_365_apps_workspace.path }}\\setup.exe"
+
+    - name: Verify the Office Deployment Tool publisher signature
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $signature = Get-AuthenticodeSignature -FilePath '{{ microsoft_365_apps_workspace.path | replace("'", "''") }}\setup.exe'
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'CN=Microsoft Corporation') {
+            throw "Office Deployment Tool signature validation failed: status=$($signature.Status); subject=$($signature.SignerCertificate.Subject)"
+          }
+          $Ansible.Result = @{ subject = $signature.SignerCertificate.Subject; status = $signature.Status.ToString() }
+          $Ansible.Changed = $false
+      changed_when: false
+
+    - name: Write the non-secret Office Deployment Tool configuration
+      ansible.windows.win_copy:
+        dest: "{{ microsoft_365_apps_workspace.path }}\\configuration.xml"
+        content: |
+          <Configuration>
+            <Add OfficeClientEdition="{{ microsoft_365_apps_edition }}" Channel="{{ microsoft_365_apps_channel }}">
+              <Product ID="{{ microsoft_365_apps_product_id }}">
+                <Language ID="{{ microsoft_365_apps_language }}" />
+              </Product>
+            </Add>
+            <Display Level="None" AcceptEULA="TRUE" />
+          </Configuration>
+
+    - name: Configure Microsoft 365 Apps from the Microsoft CDN
+      ansible.windows.win_command:
+        cmd: '"{{ microsoft_365_apps_workspace.path }}\setup.exe" /configure "{{ microsoft_365_apps_workspace.path }}\configuration.xml"'
+      register: microsoft_365_apps_install
+      changed_when: true
+
+  always:
+    - name: Remove the temporary Office Deployment Tool workspace
+      ansible.windows.win_file:
+        path: "{{ microsoft_365_apps_workspace.path }}"
+        state: absent
+      when: microsoft_365_apps_workspace is defined
+
+- name: Validate installed Microsoft 365 Apps registration
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $configuration = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration' -ErrorAction Stop
+      $products = @($configuration.ProductReleaseIds -split ',' | Where-Object { $_ })
+      if ('{{ microsoft_365_apps_product_id }}' -notin $products) { throw 'Microsoft 365 Apps for enterprise is not registered after installation.' }
+      if ($configuration.Platform -ne 'x64') { throw "Unexpected Microsoft 365 Apps platform: $($configuration.Platform)" }
+      if ([string]::IsNullOrWhiteSpace($configuration.VersionToReport)) { throw 'Microsoft 365 Apps does not report an installed version.' }
+      $Ansible.Result = @{
+        installed = $true
+        products = $products
+        platform = $configuration.Platform
+        version = $configuration.VersionToReport
+        channel = $configuration.UpdateChannel
+        client_culture = $configuration.ClientCulture
+      }
+      $Ansible.Changed = $false
+  when: microsoft_365_apps_enabled
+  changed_when: false
+  register: microsoft_365_apps_validation
+
+- name: Report non-secret Microsoft 365 Apps state
+  ansible.builtin.debug:
+    var: microsoft_365_apps_validation.result
+  when: microsoft_365_apps_enabled

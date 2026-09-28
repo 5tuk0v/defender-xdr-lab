@@ -1,0 +1,170 @@
+---
+- name: Validate Microsoft Defender host preparation inputs
+  ansible.builtin.assert:
+    that:
+      - mde_windows_host_prep_enabled is boolean
+      - _mde_windows_host_prep_platform_url == 'https://go.microsoft.com/fwlink/?LinkID=870379&arch=x64&clcid=0x409'
+      - _mde_windows_host_prep_platform_path == 'C:\\ludus\\updateplatform.exe'
+      - _mde_windows_host_prep_manual_update_baseline == '4.18.2001.10'
+      - _mde_windows_host_prep_minimum_platform_version == '4.18.2211.5'
+      - _mde_windows_host_prep_minimum_engine_version == '1.1.19900.2'
+      - _mde_windows_host_prep_minimum_security_intelligence_version == '1.391.345.0'
+    fail_msg: >-
+      mde_windows_host_prep accepts only Microsoft's current x64 KB4052623
+      package URL, the disposable C:\ludus staging path, and valid minimum
+      Defender versions.
+  when: mde_windows_host_prep_enabled
+
+- name: Install and validate the current Microsoft Defender platform
+  ansible.windows.win_powershell:
+    script: |
+      param(
+        [String]$PlatformUrl,
+        [String]$PlatformPath,
+        [String]$ManualUpdateBaseline,
+        [String]$MinimumPlatformVersion,
+        [String]$MinimumEngineVersion,
+        [String]$MinimumSecurityIntelligenceVersion
+      )
+
+      $ErrorActionPreference = 'Stop'
+      $ProgressPreference = 'SilentlyContinue'
+
+      function Convert-ToVersion {
+        param(
+          [Parameter(Mandatory = $true)]
+          [String]$Value,
+          [Parameter(Mandatory = $true)]
+          [String]$Label
+        )
+
+        $match = [Regex]::Match($Value, '\d+\.\d+\.\d+\.\d+')
+        if (-not $match.Success) {
+          throw "Unable to parse $Label version from '$Value'."
+        }
+        return [Version]$match.Value
+      }
+
+      function Get-DefenderVersions {
+        $status = Get-MpComputerStatus
+        if ([String]::IsNullOrWhiteSpace([String]$status.AMProductVersion)) {
+          throw 'Microsoft Defender Antivirus did not report an antimalware platform version.'
+        }
+        if ([String]::IsNullOrWhiteSpace([String]$status.AMEngineVersion)) {
+          throw 'Microsoft Defender Antivirus did not report an engine version.'
+        }
+        if ([String]::IsNullOrWhiteSpace([String]$status.AntivirusSignatureVersion)) {
+          throw 'Microsoft Defender Antivirus did not report a security intelligence version.'
+        }
+
+        return @{
+          platform = Convert-ToVersion -Value ([String]$status.AMProductVersion) -Label 'platform'
+          engine = Convert-ToVersion -Value ([String]$status.AMEngineVersion) -Label 'engine'
+          security_intelligence = Convert-ToVersion -Value ([String]$status.AntivirusSignatureVersion) -Label 'security intelligence'
+        }
+      }
+
+      $minimumPlatform = Convert-ToVersion -Value $MinimumPlatformVersion -Label 'minimum platform'
+      $manualUpdateBaseline = Convert-ToVersion -Value $ManualUpdateBaseline -Label 'manual update baseline'
+      $minimumEngine = Convert-ToVersion -Value $MinimumEngineVersion -Label 'minimum engine'
+      $minimumSecurityIntelligence = Convert-ToVersion -Value $MinimumSecurityIntelligenceVersion -Label 'minimum security intelligence'
+      $platformDirectory = Split-Path -Path $PlatformPath -Parent
+      New-Item -Path $platformDirectory -ItemType Directory -Force | Out-Null
+      Remove-Item -LiteralPath $PlatformPath -Force -ErrorAction SilentlyContinue
+
+      $before = Get-DefenderVersions
+      if (-not [Environment]::Is64BitOperatingSystem) {
+        throw 'The Microsoft x64 Defender platform package requires a 64-bit Windows host.'
+      }
+      if ($before.platform -lt $manualUpdateBaseline) {
+        throw "Microsoft requires platform $manualUpdateBaseline before applying the current manual platform package; found $($before.platform)."
+      }
+      $signatureSubject = $null
+      $packageSha256 = $null
+      $executionExitCode = $null
+      $signatureUpdateAttempted = $false
+
+      try {
+        Invoke-WebRequest -UseBasicParsing -Uri $PlatformUrl -OutFile $PlatformPath
+
+        $signature = Get-AuthenticodeSignature -FilePath $PlatformPath
+        if ($signature.Status -ne 'Valid') {
+          throw "The Microsoft Defender platform package signature is $($signature.Status)."
+        }
+        if (
+          $null -eq $signature.SignerCertificate -or
+          $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation'
+        ) {
+          throw 'The Microsoft Defender platform package is not signed by Microsoft Corporation.'
+        }
+        $signatureSubject = $signature.SignerCertificate.Subject
+        $packageSha256 = (Get-FileHash -LiteralPath $PlatformPath -Algorithm SHA256).Hash
+
+        $process = Start-Process -FilePath $PlatformPath -Wait -PassThru
+        $executionExitCode = $process.ExitCode
+        if ($executionExitCode -ne 0) {
+          throw "The Microsoft Defender platform installer returned exit code $executionExitCode."
+        }
+
+        if (
+          $before.engine -lt $minimumEngine -or
+          $before.security_intelligence -lt $minimumSecurityIntelligence
+        ) {
+          $signatureUpdateAttempted = $true
+          Update-MpSignature -UpdateSource MMPC | Out-Null
+        }
+
+        $after = Get-DefenderVersions
+        if ($after.platform -lt $before.platform) {
+          throw "Microsoft Defender platform regressed from $($before.platform) to $($after.platform)."
+        }
+        if ($after.platform -lt $minimumPlatform) {
+          throw "Microsoft Defender platform $($after.platform) is below required minimum $minimumPlatform."
+        }
+        if ($after.engine -lt $minimumEngine) {
+          throw "Microsoft Defender engine $($after.engine) is below required minimum $minimumEngine."
+        }
+        if ($after.security_intelligence -lt $minimumSecurityIntelligence) {
+          throw "Microsoft Defender security intelligence $($after.security_intelligence) is below required minimum $minimumSecurityIntelligence."
+        }
+
+      }
+      finally {
+        Remove-Item -LiteralPath $PlatformPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $PlatformPath) {
+          throw "The Defender platform package could not be removed from $PlatformPath."
+        }
+      }
+
+      $Ansible.Result = @{
+        before = @{
+          platform = [String]$before.platform
+          engine = [String]$before.engine
+          security_intelligence = [String]$before.security_intelligence
+        }
+        package = @{
+          sha256 = $packageSha256
+          signer = $signatureSubject
+        }
+        after = @{
+          platform = [String]$after.platform
+          engine = [String]$after.engine
+          security_intelligence = [String]$after.security_intelligence
+        }
+        installer_exit_code = $executionExitCode
+        signature_update_attempted = $signatureUpdateAttempted
+        package_removed = $true
+      }
+      $Ansible.Changed = (
+        $after.platform -ne $before.platform -or
+        $after.engine -ne $before.engine -or
+        $after.security_intelligence -ne $before.security_intelligence
+      )
+    parameters:
+      PlatformUrl: "{{ _mde_windows_host_prep_platform_url }}"
+      PlatformPath: "{{ _mde_windows_host_prep_platform_path }}"
+      ManualUpdateBaseline: "{{ _mde_windows_host_prep_manual_update_baseline }}"
+      MinimumPlatformVersion: "{{ _mde_windows_host_prep_minimum_platform_version }}"
+      MinimumEngineVersion: "{{ _mde_windows_host_prep_minimum_engine_version }}"
+      MinimumSecurityIntelligenceVersion: "{{ _mde_windows_host_prep_minimum_security_intelligence_version }}"
+  when: mde_windows_host_prep_enabled

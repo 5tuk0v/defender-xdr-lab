@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: mdi_sensor_performance
+  author: 5tuk0v
+  description: High Performance power-plan configuration for supported MDI sensor hosts
+  license: MIT
+  min_ansible_version: "2.16"
+dependencies: []

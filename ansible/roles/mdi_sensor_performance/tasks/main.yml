@@ -1,0 +1,35 @@
+---
+- name: Validate the supported MDI sensor host role
+  ansible.builtin.assert:
+    that:
+      - mdi_sensor_performance_allowed_domain_roles is sequence
+      - mdi_sensor_performance_allowed_domain_roles | length > 0
+      - mdi_sensor_performance_allowed_domain_roles | difference([3, 4, 5]) | length == 0
+    fail_msg: >-
+      mdi_sensor_performance_allowed_domain_roles must contain only member-server
+      (3) or domain-controller (4/5) Win32_ComputerSystem DomainRole values.
+  when: mdi_sensor_performance_enabled
+
+- name: Set the MDI sensor host to the High Performance power plan
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $computerSystem = Get-CimInstance Win32_ComputerSystem
+      $allowedDomainRoles = @({{ mdi_sensor_performance_allowed_domain_roles | join(', ') }})
+      if ($computerSystem.DomainRole -notin $allowedDomainRoles) {
+        throw "Unsupported MDI sensor host domain role: $($computerSystem.DomainRole)."
+      }
+      $highPerformanceGuid = '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c'
+      $before = (& powercfg /getactivescheme) -join ' '
+      $changed = $before -notmatch $highPerformanceGuid
+      if ($changed) {
+        & powercfg /setactive $highPerformanceGuid
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to set the High Performance power plan.' }
+      }
+      $after = (& powercfg /getactivescheme) -join ' '
+      if ($after -notmatch $highPerformanceGuid) {
+        throw 'High Performance power plan is not active after configuration.'
+      }
+      $Ansible.Result = @{ active_power_scheme = $after }
+      $Ansible.Changed = $changed
+  when: mdi_sensor_performance_enabled

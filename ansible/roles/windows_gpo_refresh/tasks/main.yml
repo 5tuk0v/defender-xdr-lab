@@ -1,0 +1,23 @@
+---
+- name: Validate Group Policy refresh variables
+  ansible.builtin.assert:
+    that:
+      - windows_gpo_refresh_enabled is boolean
+    fail_msg: windows_gpo_refresh_enabled must be a boolean.
+
+- name: Refresh effective computer Group Policy
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+      if (-not $computerSystem.PartOfDomain) {
+        throw 'Computer Group Policy refresh requires a domain-joined Windows host.'
+      }
+      $output = & gpupdate.exe /target:computer /force /wait:120 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        throw "gpupdate.exe failed with exit code ${LASTEXITCODE}: $($output -join [Environment]::NewLine)"
+      }
+      $Ansible.Result = @{ domain = $computerSystem.Domain; output = @($output) }
+      $Ansible.Changed = $false
+  when: windows_gpo_refresh_enabled
+  changed_when: false

@@ -1,0 +1,21 @@
+---
+manifest_version: 1
+id: complete
+name: Defender XDR Lab - Complete
+description: >-
+  Five-host Defender XDR lab combining server and client MDE, Microsoft Entra
+  hybrid join on both workstations, Entra Connect Sync, MDI v3, and vulnerable
+  AD CS.
+version: 0.1.3
+config: range-config.yml
+tags:
+  - active-directory
+  - adcs
+  - defender
+  - entra
+  - hybrid-identity
+  - hybrid-join
+  - mde
+  - mdi
+  - windows
+  - xdr

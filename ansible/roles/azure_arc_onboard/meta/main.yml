@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: azure_arc_onboard
+  author: 5tuk0v
+  description: Optional Azure Arc onboarding from the portal-generated PowerShell script
+  license: MIT
+  min_ansible_version: "2.16"
+dependencies: []

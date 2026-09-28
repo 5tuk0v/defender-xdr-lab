@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: mde_client_onboard
+  author: 5tuk0v
+  description: Optional MDE client onboarding from the Defender portal-generated local script
+  license: MIT
+  min_ansible_version: "2.16"
+dependencies: []

@@ -1,0 +1,6 @@
+---
+- name: Syntax-check the Controlled Folder Access policy role
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: controlled_folder_access_policy

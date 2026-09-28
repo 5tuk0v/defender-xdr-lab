@@ -1,0 +1,10 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: controlled_folder_access_policy
+  author: 5tuk0v
+  description: Native-first Controlled Folder Access domain GPO policy
+  license: MIT
+  min_ansible_version: "2.16"
+collections:
+  - ansible.windows

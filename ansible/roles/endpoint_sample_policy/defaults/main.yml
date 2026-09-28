@@ -1,0 +1,4 @@
+---
+# This GPO is the only authority for these endpoint sample-transfer values.
+endpoint_sample_policy_state: blocked
+endpoint_sample_policy_gpo_name: Defender XDR Lab - Endpoint Sample Safety

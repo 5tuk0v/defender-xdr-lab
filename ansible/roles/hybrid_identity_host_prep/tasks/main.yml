@@ -1,0 +1,132 @@
+---
+- name: Ensure the Windows .NET Framework feature is installed
+  ansible.windows.win_feature:
+    name: NET-Framework-45-Core
+    state: present
+  register: hybrid_identity_host_prep_dotnet
+  when: hybrid_identity_host_prep_enabled
+
+- name: Enable TLS 1.2 for Entra Connect and .NET
+  ansible.windows.win_regedit:
+    path: "{{ item.path }}"
+    name: "{{ item.name }}"
+    data: "{{ item.data }}"
+    type: dword
+    state: present
+  loop:
+    - path: HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319
+      name: SystemDefaultTlsVersions
+      data: 1
+    - path: HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319
+      name: SchUseStrongCrypto
+      data: 1
+    - path: HKLM:\SOFTWARE\WOW6432Node\Microsoft\.NETFramework\v4.0.30319
+      name: SystemDefaultTlsVersions
+      data: 1
+    - path: HKLM:\SOFTWARE\WOW6432Node\Microsoft\.NETFramework\v4.0.30319
+      name: SchUseStrongCrypto
+      data: 1
+    - path: HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client
+      name: Enabled
+      data: 1
+    - path: HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client
+      name: DisabledByDefault
+      data: 0
+    - path: HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server
+      name: Enabled
+      data: 1
+    - path: HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server
+      name: DisabledByDefault
+      data: 0
+  register: hybrid_identity_host_prep_tls
+  when: hybrid_identity_host_prep_enabled
+
+- name: Reboot after changing installer prerequisites
+  ansible.windows.win_reboot:
+    reboot_timeout: 1200
+  when:
+    - hybrid_identity_host_prep_enabled
+    - >-
+      (hybrid_identity_host_prep_dotnet.reboot_required | default(false)) or
+      (hybrid_identity_host_prep_tls.changed | default(false))
+
+- name: Allow signed PowerShell installation scripts
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $before = Get-ExecutionPolicy
+      $changed = $false
+      if ($before -eq 'Restricted') {
+        Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force
+        $changed = $true
+      }
+      $after = Get-ExecutionPolicy
+      if ($after -eq 'Restricted') {
+        throw 'The effective PowerShell execution policy still blocks signed scripts.'
+      }
+      $Ansible.Result = @{ before = $before; after = $after }
+      $Ansible.Changed = $changed
+  when: hybrid_identity_host_prep_enabled
+
+- name: Inspect the optional Entra Connect installer on the controller
+  ansible.builtin.stat:
+    path: "{{ hybrid_identity_host_prep_connect_installer_controller_path }}"
+  delegate_to: localhost
+  become: false
+  register: hybrid_identity_host_prep_connect_installer
+  when: hybrid_identity_host_prep_enabled
+
+- name: Report that the optional Entra Connect installer was not staged
+  ansible.builtin.debug:
+    msg: >-
+      AzureADConnect.msi was not found in the protected controller directory.
+      Local prerequisite preparation succeeded; download the current installer
+      from the Entra admin center and copy it to SYNC01 before commissioning.
+  when:
+    - hybrid_identity_host_prep_enabled
+    - not hybrid_identity_host_prep_connect_installer.stat.exists
+
+- name: Validate the optional Connect installer is a regular file
+  ansible.builtin.assert:
+    that:
+      - hybrid_identity_host_prep_connect_installer.stat.isreg | default(false)
+    fail_msg: >-
+      The optional Entra Connect installer path exists but is not a regular
+      file: {{ hybrid_identity_host_prep_connect_installer_controller_path }}
+  when:
+    - hybrid_identity_host_prep_enabled
+    - hybrid_identity_host_prep_connect_installer.stat.exists
+
+- name: Stage the operator-supplied Entra Connect installer
+  ansible.windows.win_copy:
+    src: "{{ hybrid_identity_host_prep_connect_installer_controller_path }}"
+    dest: "{{ hybrid_identity_host_prep_connect_installer_guest_path }}"
+  when:
+    - hybrid_identity_host_prep_enabled
+    - hybrid_identity_host_prep_connect_installer.stat.exists
+
+- name: Verify the staged Entra Connect installer signature
+  ansible.windows.win_powershell:
+    script: |
+      param(
+        [String]$InstallerPath
+      )
+      $ErrorActionPreference = 'Stop'
+      $signature = Get-AuthenticodeSignature -FilePath $InstallerPath
+      if ($signature.Status -ne 'Valid') {
+        throw "The Entra Connect installer signature is $($signature.Status)."
+      }
+      if ($signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+        throw 'The Entra Connect installer is not signed by Microsoft Corporation.'
+      }
+      $Ansible.Result = @{
+        path = $InstallerPath
+        signer = $signature.SignerCertificate.Subject
+      }
+      $Ansible.Changed = $false
+    parameters:
+      InstallerPath: "{{ hybrid_identity_host_prep_connect_installer_guest_path }}"
+  when:
+    - hybrid_identity_host_prep_enabled
+    - hybrid_identity_host_prep_connect_installer.stat.exists
+  changed_when: false

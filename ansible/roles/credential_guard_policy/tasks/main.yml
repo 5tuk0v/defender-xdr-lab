@@ -1,0 +1,93 @@
+---
+- name: Validate Credential Guard policy choice
+  ansible.builtin.assert:
+    that:
+      - credential_guard_policy_state in ['native', 'enabled', 'disabled']
+      - credential_guard_policy_gpo_name | length > 0
+
+- name: Resolve the Ludus domain-administrator context
+  ansible.builtin.set_fact:
+    credential_guard_policy_ludus_host: "{{ ludus | selectattr('vm_name', 'equalto', inventory_hostname) | list | first }}"
+
+- name: Validate the Ludus domain-administrator context
+  ansible.builtin.assert:
+    that:
+      - defaults is mapping
+      - defaults.ad_domain_admin is defined
+      - defaults.ad_domain_admin | length > 0
+      - defaults.ad_domain_admin_password is defined
+      - defaults.ad_domain_admin_password | length > 0
+      - credential_guard_policy_ludus_host.domain.role == 'primary-dc'
+      - credential_guard_policy_ludus_host.domain.fqdn | length > 0
+    fail_msg: The Credential Guard policy requires the primary DC and Ludus defaults domain-administrator credentials.
+  no_log: true
+
+- name: Configure the Credential Guard member-computer GPO
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory -ErrorAction Stop
+      Import-Module GroupPolicy -ErrorAction Stop
+      if ($env:USERNAME -ine '{{ defaults.ad_domain_admin | replace("'", "''") }}' -or $env:USERDNSDOMAIN -ine '{{ credential_guard_policy_ludus_host.domain.fqdn | replace("'", "''") }}') {
+        throw "GPO mutation is not running as the configured Ludus domain administrator."
+      }
+      $domain = Get-ADDomain -ErrorAction Stop
+      $targets = @("OU=Servers,$($domain.DistinguishedName)", "OU=Workstations,$($domain.DistinguishedName)")
+      foreach ($target in $targets) {
+        if (-not (Get-ADOrganizationalUnit -Identity $target -ErrorAction SilentlyContinue)) { throw "Ludus member-computer OU was not found: $target" }
+      }
+      $gpoName = '{{ credential_guard_policy_gpo_name | replace("'", "''") }}'
+      $state = '{{ credential_guard_policy_state }}'
+      $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
+      $changed = $false
+      if ($state -eq 'native') {
+        if ($null -ne $gpo) {
+          if ($gpo.Description -ne 'Role-owned Defender XDR Lab Credential Guard policy.') { throw "Refusing to remove a GPO not owned by this role: $gpoName" }
+          foreach ($target in $targets) {
+            if ($null -ne ((Get-GPInheritance -Target $target).GpoLinks | Where-Object DisplayName -eq $gpoName | Select-Object -First 1)) {
+              Remove-GPLink -Name $gpoName -Target $target -Confirm:$false -ErrorAction Stop
+            }
+          }
+          Remove-GPO -Guid $gpo.Id -ErrorAction Stop
+          $changed = $true
+        }
+      } else {
+        if ($null -eq $gpo) {
+          $gpo = New-GPO -Name $gpoName -Comment 'Role-owned Defender XDR Lab Credential Guard policy.' -ErrorAction Stop
+          $changed = $true
+        }
+        foreach ($target in $targets) {
+          if ($null -eq ((Get-GPInheritance -Target $target).GpoLinks | Where-Object DisplayName -eq $gpoName | Select-Object -First 1)) {
+            New-GPLink -Name $gpoName -Target $target -LinkEnabled Yes -ErrorAction Stop | Out-Null
+            $changed = $true
+          }
+        }
+        Set-GPPermission -Name $gpoName -TargetName 'Authenticated Users' -TargetType Group -PermissionLevel GpoApply -Replace -ErrorAction Stop
+        $value = if ($state -eq 'enabled') { 1 } else { 0 }
+        $settings = @(
+          @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard'; Name = 'EnableVirtualizationBasedSecurity' },
+          @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard'; Name = 'RequirePlatformSecurityFeatures' },
+          @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa'; Name = 'LsaCfgFlags' }
+        )
+        foreach ($setting in $settings) {
+          $current = Get-GPRegistryValue -Name $gpoName -Key $setting.Key -ValueName $setting.Name -ErrorAction SilentlyContinue
+          if ($null -eq $current -or [int]$current.Value -ne $value) {
+            Set-GPRegistryValue -Name $gpoName -Key $setting.Key -ValueName $setting.Name -Type DWord -Value $value -ErrorAction Stop | Out-Null
+            $changed = $true
+          }
+        }
+      }
+      $Ansible.Changed = $changed
+      $Ansible.Result = @{ gpo = $gpoName; state = $state; scope = 'Ludus Servers and Workstations OUs' }
+  register: credential_guard_policy_result
+  become: true
+  become_method: runas
+  become_user: "{{ defaults.ad_domain_admin }}@{{ credential_guard_policy_ludus_host.domain.fqdn }}"
+  vars:
+    ansible_become_password: "{{ defaults.ad_domain_admin_password }}"
+
+- name: Report Credential Guard policy state
+  ansible.builtin.debug:
+    msg: >-
+      Credential Guard is {{ credential_guard_policy_state }} through
+      {{ credential_guard_policy_gpo_name }} for member computers only.

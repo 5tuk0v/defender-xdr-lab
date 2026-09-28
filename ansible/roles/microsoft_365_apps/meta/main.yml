@@ -1,0 +1,12 @@
+---
+dependencies: []
+
+galaxy_info:
+  role_name: microsoft_365_apps
+  author: 5tuk0v
+  description: Install and validate Microsoft 365 Apps with the Office Deployment Tool
+  license: MIT
+  min_ansible_version: '2.16'
+
+collections:
+  - ansible.windows

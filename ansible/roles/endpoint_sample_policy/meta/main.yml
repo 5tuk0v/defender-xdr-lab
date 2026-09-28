@@ -1,0 +1,11 @@
+---
+dependencies: []
+
+galaxy_info:
+  role_name: endpoint_sample_policy
+  author: 5tuk0v
+  description: Security-filtered GPO for endpoint Defender sample-transfer settings
+  license: MIT
+  min_ansible_version: "2.16"
+collections:
+  - ansible.windows

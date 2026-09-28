@@ -1,0 +1,99 @@
+---
+- name: Validate the targeted hybrid join discovery selection
+  ansible.builtin.assert:
+    that:
+      - hybrid_join_client_prep_enabled is boolean
+      - >-
+        (hybrid_join_tenant_id | trim | length == 0 and
+         hybrid_join_tenant_name | trim | length == 0) or
+        (hybrid_join_tenant_id | trim | length > 0 and
+         hybrid_join_tenant_name | trim | length > 0)
+    fail_msg: >-
+      hybrid_join_tenant_id and hybrid_join_tenant_name must either both be
+      supplied or both be empty.
+
+- name: Configure targeted hybrid join client discovery
+  when: hybrid_join_client_prep_enabled
+  block:
+    - name: Validate the selected Microsoft Entra tenant values
+      ansible.builtin.assert:
+        that:
+          - hybrid_join_tenant_id | trim is match('(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+          - hybrid_join_tenant_name | trim is match('^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$')
+        fail_msg: >-
+          Supply a Microsoft Entra tenant GUID and verified or onmicrosoft.com
+          tenant name, or leave both values empty.
+      when: hybrid_join_tenant_id | trim | length > 0
+
+    - name: Validate that targeted discovery runs on a domain-joined workstation
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem
+          if (-not $computerSystem.PartOfDomain) {
+            throw 'Targeted hybrid join discovery requires a domain-joined client.'
+          }
+          if ([int]$computerSystem.DomainRole -ne 1) {
+            throw "Expected a domain-member workstation; DomainRole is $($computerSystem.DomainRole)."
+          }
+          $Ansible.Result = @{
+            domain = $computerSystem.Domain
+            domain_role = [int]$computerSystem.DomainRole
+          }
+          $Ansible.Changed = $false
+      when: hybrid_join_tenant_id | trim | length > 0
+
+    - name: Set the client-side Microsoft Entra tenant ID
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CDJ\AAD
+        name: TenantId
+        data: "{{ hybrid_join_tenant_id | trim | lower }}"
+        type: string
+        state: present
+      when: hybrid_join_tenant_id | trim | length > 0
+
+    - name: Set the client-side Microsoft Entra tenant name
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CDJ\AAD
+        name: TenantName
+        data: "{{ hybrid_join_tenant_name | trim | lower }}"
+        type: string
+        state: present
+      when: hybrid_join_tenant_id | trim | length > 0
+
+    - name: Verify the targeted hybrid join discovery state
+      ansible.windows.win_powershell:
+        script: |
+          [CmdletBinding()]
+          param (
+            [String]$TenantId,
+            [String]$TenantName
+          )
+
+          $ErrorActionPreference = 'Stop'
+          $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CDJ\AAD'
+          $state = Get-ItemProperty -LiteralPath $path -ErrorAction Stop
+          if ($state.TenantId -ne $TenantId) {
+            throw 'The client-side TenantId did not validate.'
+          }
+          if ($state.TenantName -ne $TenantName) {
+            throw 'The client-side TenantName did not validate.'
+          }
+          $Ansible.Result = @{
+            tenant_id = $state.TenantId
+            tenant_name = $state.TenantName
+            discovery_scope = 'local-client'
+          }
+          $Ansible.Changed = $false
+        parameters:
+          TenantId: "{{ hybrid_join_tenant_id | trim | lower }}"
+          TenantName: "{{ hybrid_join_tenant_name | trim | lower }}"
+      when: hybrid_join_tenant_id | trim | length > 0
+
+    - name: Report that targeted Microsoft Entra discovery is not selected
+      ansible.builtin.debug:
+        msg: >-
+          hybrid_join_tenant_id and hybrid_join_tenant_name are empty. The
+          workstation remains domain joined, but client-side Microsoft Entra
+          tenant discovery must be configured during commissioning.
+      when: hybrid_join_tenant_id | trim | length == 0

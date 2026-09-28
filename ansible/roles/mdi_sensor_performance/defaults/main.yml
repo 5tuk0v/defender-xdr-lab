@@ -1,0 +1,9 @@
+---
+# This role owns only the stable local MDI recommendation. It has no Azure,
+# Arc, MDE, portal, or Windows Update dependency.
+mdi_sensor_performance_enabled: true
+# Win32_ComputerSystem.DomainRole: 3=member server, 4/5=domain controller.
+mdi_sensor_performance_allowed_domain_roles:
+  - 3
+  - 4
+  - 5

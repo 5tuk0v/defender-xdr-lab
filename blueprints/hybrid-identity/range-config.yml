@@ -1,0 +1,136 @@
+# yamllint disable-line rule:line-length
+# yaml-language-server: $schema=https://docs.ludus.cloud/schemas/range-config.json
+---
+
+# Small hybrid-identity lab: one DC and one dedicated Entra Connect server.
+ludus:
+  - vm_name: "{{ range_id }}-dc01-mde"
+    hostname: DC01
+    template: win2022-server-x64-template
+    vlan: 10
+    ip_last_octet: 10
+    ram_gb: 6
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: defender.test
+      role: primary-dc
+    ansible_groups:
+      - mde_targets
+    roles:
+      - 5tuk0v.endpoint_sample_policy
+      - 5tuk0v.sample_submission_sinkhole
+      - 5tuk0v.controlled_folder_access_policy
+      - 5tuk0v.credential_guard_policy
+      - 5tuk0v.defender_baseline
+      - 5tuk0v.ludus_asr_presets
+      - 5tuk0v.mdi_sensor_performance
+      - badsectorlabs.ludus_windows_utils.ludus_bulk_ad_content
+      - 5tuk0v.hybrid_identity_scope
+      - 5tuk0v.windows_gpo_refresh
+      - 5tuk0v.mde_windows_host_prep
+      - 5tuk0v.azure_arc_onboard
+    role_vars:
+      endpoint_sample_policy_state: blocked
+      controlled_folder_access_policy_state: native
+      credential_guard_policy_state: native
+      defender_baseline_enabled: true
+      ludus_asr_presets_preset: windows_server_2022
+      ludus_asr_presets_mode: audit
+      mdi_sensor_performance_enabled: true
+      mde_windows_host_prep_enabled: true
+      # Optional: edit once after applying the blueprint and before deployment.
+      # Example: lab.example.com (must already be verified in Entra).
+      hybrid_identity_upn_suffix: ""
+      hybrid_identity_scope_group: Entra Sync Scope
+      hybrid_identity_scope_member_groups:
+        - Hybrid Lab Users
+      ludus_ad_content_mode: custom
+      ludus_organisation_units:
+        - name: EntraSync
+          path: "DC=defender,DC=test"
+        - name: Users
+          path: "OU=EntraSync,DC=defender,DC=test"
+        - name: Groups
+          path: "OU=EntraSync,DC=defender,DC=test"
+      ludus_groups:
+        global:
+          - name: Hybrid Lab Users
+            path: "OU=Groups,OU=EntraSync,DC=defender,DC=test"
+          - name: Entra Sync Scope
+            path: "OU=Groups,OU=EntraSync,DC=defender,DC=test"
+        domainlocal: []
+        universal: []
+      ludus_users:
+        - name: sync.alice
+          firstname: Alice
+          surname: Morgan
+          password: "LabOnly-Passw0rd!"
+          description: "Disposable hybrid identity lab user"
+          path: "OU=Users,OU=EntraSync,DC=defender,DC=test"
+          groups:
+            - Hybrid Lab Users
+            - Entra Sync Scope
+          password_never_expires: true
+        - name: sync.bob
+          firstname: Bob
+          surname: Carter
+          password: "LabOnly-Passw0rd!"
+          description: "Disposable hybrid identity lab user"
+          path: "OU=Users,OU=EntraSync,DC=defender,DC=test"
+          groups:
+            - Hybrid Lab Users
+            - Entra Sync Scope
+          password_never_expires: true
+    testing:
+      snapshot: true
+      block_internet: true
+
+  - vm_name: "{{ range_id }}-sync01-mde"
+    hostname: SYNC01
+    template: win2022-server-x64-template
+    vlan: 10
+    ip_last_octet: 20
+    ram_gb: 6
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: defender.test
+      role: member
+    ansible_groups:
+      - mde_targets
+    roles:
+      - 5tuk0v.hybrid_identity_host_prep
+      - 5tuk0v.mdi_sensor_performance
+      - 5tuk0v.ludus_asr_presets
+      - 5tuk0v.sample_submission_sinkhole
+      - 5tuk0v.windows_gpo_refresh
+      - 5tuk0v.mde_windows_host_prep
+      - 5tuk0v.azure_arc_onboard
+    role_vars:
+      hybrid_identity_host_prep_enabled: true
+      mdi_sensor_performance_enabled: true
+      ludus_asr_presets_preset: windows_server_2022
+      ludus_asr_presets_mode: audit
+      mde_windows_host_prep_enabled: true
+    testing:
+      snapshot: true
+      block_internet: true
+
+network:
+  inter_vlan_default: REJECT
+
+defaults:
+  snapshot_with_RAM: true
+  stale_hours: 0
+  ad_domain_functional_level: WinThreshold
+  ad_forest_functional_level: WinThreshold
+  ad_domain_admin: domainadmin
+  ad_domain_admin_password: password
+  ad_domain_user: domainuser
+  ad_domain_user_password: password
+  ad_domain_safe_mode_password: password
+  timezone: America/Toronto
+  enable_dynamic_wallpaper: true

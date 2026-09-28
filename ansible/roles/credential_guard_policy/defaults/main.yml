@@ -1,0 +1,4 @@
+---
+# Optional protection only. Native leaves the policy unconfigured.
+credential_guard_policy_state: native
+credential_guard_policy_gpo_name: Defender XDR Lab - Credential Guard

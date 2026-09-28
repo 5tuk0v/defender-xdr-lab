@@ -1,0 +1,12 @@
+---
+dependencies: []
+
+galaxy_info:
+  role_name: windows_gpo_refresh
+  author: 5tuk0v
+  description: Synchronize effective computer Group Policy after lab deployment
+  license: MIT
+  min_ansible_version: "2.16"
+
+collections:
+  - ansible.windows

@@ -1,0 +1,237 @@
+---
+- name: Inspect initial MDE client state
+  ansible.builtin.raw: >-
+    $statusPath = 'HKLM:\SOFTWARE\Microsoft\Windows Advanced Threat Protection\Status';
+    $onboardingState = -1;
+    try {
+      $value = (Get-ItemProperty -LiteralPath $statusPath -Name OnboardingState -ErrorAction Stop).OnboardingState;
+      if ($null -ne $value) { $onboardingState = [int]$value }
+    } catch {};
+    $sense = Get-Service -Name Sense -ErrorAction SilentlyContinue;
+    $senseStatus = if ($null -eq $sense) { 'missing' } else { [string]$sense.Status };
+    [ordered]@{
+      onboarding_state = $onboardingState;
+      sense_status = $senseStatus
+    } | ConvertTo-Json -Compress
+  register: mde_client_onboard_initial_probe
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Validate initial MDE client state probe
+  ansible.builtin.assert:
+    that:
+      - mde_client_onboard_initial_probe.rc | default(1) == 0
+      - mde_client_onboard_initial_probe.stdout | default('') | trim | length > 0
+    quiet: true
+    fail_msg: >-
+      Unable to inspect the local MDE onboarding registry and Sense service.
+      No onboarding artifact was staged or executed.
+
+- name: Classify initial MDE client state
+  ansible.builtin.set_fact:
+    mde_client_onboard_initial_state: >-
+      {{ mde_client_onboard_initial_probe.stdout | trim | from_json }}
+    mde_client_onboard_already_onboarded: >-
+      {{ (mde_client_onboard_initial_probe.stdout | trim | from_json).onboarding_state | int == 1 }}
+  changed_when: false
+  no_log: true
+
+- name: Check for Defender portal-generated MDE onboarding script
+  ansible.builtin.stat:
+    path: "{{ mde_client_onboard_controller_artifact_path }}"
+  delegate_to: localhost
+  register: mde_client_onboard_artifact
+  changed_when: false
+
+- name: Report existing healthy MDE onboarding
+  ansible.builtin.debug:
+    msg:
+      mde_onboarding_status: already_onboarded
+      mde_onboarding_changes_cloud: false
+      onboarding_state: 1
+      sense_status: Running
+      mde_onboarding_next_action: MDE is already onboarded; the script was not run.
+  when:
+    - mde_client_onboard_already_onboarded
+    - mde_client_onboard_initial_state.sense_status == 'Running'
+
+- name: Report unhealthy existing MDE onboarding
+  ansible.builtin.debug:
+    msg:
+      mde_onboarding_status: unhealthy
+      mde_onboarding_changes_cloud: false
+      onboarding_state: 1
+      sense_status: "{{ mde_client_onboard_initial_state.sense_status }}"
+      mde_onboarding_next_action: >-
+        OnboardingState is 1 but Sense is not running. Review local MDE events
+        and prerequisites; the onboarding script was not run again.
+  when:
+    - mde_client_onboard_already_onboarded
+    - mde_client_onboard_initial_state.sense_status != 'Running'
+
+- name: Stop on unhealthy existing MDE onboarding
+  ansible.builtin.fail:
+    msg: >-
+      Existing MDE onboarding is unhealthy. Review the preceding sanitized
+      state before attempting another lifecycle action.
+  when:
+    - mde_client_onboard_already_onboarded
+    - mde_client_onboard_initial_state.sense_status != 'Running'
+
+- name: Report missing MDE onboarding script
+  ansible.builtin.debug:
+    msg:
+      mde_onboarding_status: not_configured
+      mde_onboarding_changes_cloud: false
+      mde_onboarding_next_action: >-
+        Download the Windows 10 and 11 local onboarding package from the
+        Defender portal and place WindowsDefenderATPLocalOnboardingScript.cmd
+        in the documented protected controller directory outside the installed
+        role.
+  when:
+    - not mde_client_onboard_already_onboarded
+    - not mde_client_onboard_artifact.stat.exists
+
+- name: Run MDE client onboarding script
+  when:
+    - not mde_client_onboard_already_onboarded
+    - mde_client_onboard_artifact.stat.exists
+  block:
+    - name: Copy MDE onboarding script to target
+      ansible.windows.win_copy:
+        src: "{{ mde_client_onboard_controller_artifact_path }}"
+        dest: "{{ mde_client_onboard_guest_artifact_path }}"
+      register: mde_client_onboard_copy
+      failed_when: false
+      no_log: true
+
+    - name: Execute MDE onboarding script
+      ansible.windows.win_shell: |
+        $arguments = '/d /s /c "echo Y| call ""{{ mde_client_onboard_guest_artifact_path }}"""'
+        $process = Start-Process -FilePath $env:ComSpec -ArgumentList $arguments -Wait -PassThru -NoNewWindow
+        exit $process.ExitCode
+      register: mde_client_onboard_execution
+      failed_when: false
+      when: not (mde_client_onboard_copy.failed | default(false))
+      no_log: true
+
+  always:
+    - name: Remove temporary MDE onboarding script from target
+      ansible.windows.win_file:
+        path: "{{ mde_client_onboard_guest_artifact_path }}"
+        state: absent
+      register: mde_client_onboard_cleanup
+      failed_when: false
+      no_log: true
+
+- name: Verify temporary MDE onboarding script removal
+  ansible.windows.win_stat:
+    path: "{{ mde_client_onboard_guest_artifact_path }}"
+  register: mde_client_onboard_guest_artifact
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - not mde_client_onboard_already_onboarded
+    - mde_client_onboard_artifact.stat.exists
+
+- name: Inspect MDE client state after onboarding
+  ansible.builtin.raw: >-
+    $statusPath = 'HKLM:\SOFTWARE\Microsoft\Windows Advanced Threat Protection\Status';
+    $onboardingState = -1;
+    try {
+      $value = (Get-ItemProperty -LiteralPath $statusPath -Name OnboardingState -ErrorAction Stop).OnboardingState;
+      if ($null -ne $value) { $onboardingState = [int]$value }
+    } catch {};
+    $sense = Get-Service -Name Sense -ErrorAction SilentlyContinue;
+    $senseStatus = if ($null -eq $sense) { 'missing' } else { [string]$sense.Status };
+    [ordered]@{
+      onboarding_state = $onboardingState;
+      sense_status = $senseStatus
+    } | ConvertTo-Json -Compress
+  register: mde_client_onboard_final_probe
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - not mde_client_onboard_already_onboarded
+    - mde_client_onboard_artifact.stat.exists
+
+- name: Classify MDE client onboarding result without protected output
+  ansible.builtin.set_fact:
+    mde_client_onboard_final_state: >-
+      {{ mde_client_onboard_final_probe.stdout | default('{}', true) |
+         trim | default('{}', true) | from_json }}
+  changed_when: false
+  no_log: true
+  when:
+    - not mde_client_onboard_already_onboarded
+    - mde_client_onboard_artifact.stat.exists
+
+- name: Build sanitized MDE client onboarding result
+  ansible.builtin.set_fact:
+    mde_client_onboard_safe_result:
+      copy_succeeded: >-
+        {{ not (mde_client_onboard_copy.failed | default(true)) }}
+      execution_exit_code: >-
+        {{ mde_client_onboard_execution.rc | default('not_run') }}
+      onboarding_state: >-
+        {{ mde_client_onboard_final_state.onboarding_state | default(-1) }}
+      sense_status: >-
+        {{ mde_client_onboard_final_state.sense_status | default('probe_failed') }}
+      guest_artifact_removed: >-
+        {{ not (mde_client_onboard_guest_artifact.stat.exists | default(true)) }}
+  changed_when: false
+  no_log: true
+  when:
+    - not mde_client_onboard_already_onboarded
+    - mde_client_onboard_artifact.stat.exists
+
+- name: Report failed MDE client onboarding safely
+  ansible.builtin.debug:
+    msg:
+      mde_onboarding_status: failed
+      copy_succeeded: "{{ mde_client_onboard_safe_result.copy_succeeded }}"
+      execution_exit_code: "{{ mde_client_onboard_safe_result.execution_exit_code }}"
+      onboarding_state: "{{ mde_client_onboard_safe_result.onboarding_state }}"
+      sense_status: "{{ mde_client_onboard_safe_result.sense_status }}"
+      guest_artifact_removed: "{{ mde_client_onboard_safe_result.guest_artifact_removed }}"
+      mde_onboarding_next_action: >-
+        If guest_artifact_removed is false, remove the guest artifact first.
+        Then review the local SENSE operational log and package validity,
+        replace the controller artifact if needed, and reapply this role.
+        No cloud or sensor state was rolled back.
+  when:
+    - mde_client_onboard_safe_result is defined
+    - >-
+      mde_client_onboard_safe_result.onboarding_state | int != 1 or
+      mde_client_onboard_safe_result.sense_status != 'Running' or
+      not (mde_client_onboard_safe_result.guest_artifact_removed | bool)
+
+- name: Stop after failed MDE client onboarding
+  ansible.builtin.fail:
+    msg: >-
+      MDE client onboarding failed safely. Review the preceding sanitized
+      result; protected command output remains suppressed.
+  when:
+    - mde_client_onboard_safe_result is defined
+    - >-
+      mde_client_onboard_safe_result.onboarding_state | int != 1 or
+      mde_client_onboard_safe_result.sense_status != 'Running' or
+      not (mde_client_onboard_safe_result.guest_artifact_removed | bool)
+
+- name: Report successful MDE client onboarding
+  ansible.builtin.debug:
+    msg:
+      mde_onboarding_status: onboarded
+      mde_onboarding_changes_cloud: true
+      execution_exit_code: "{{ mde_client_onboard_safe_result.execution_exit_code }}"
+      onboarding_state: "{{ mde_client_onboard_safe_result.onboarding_state }}"
+      sense_status: "{{ mde_client_onboard_safe_result.sense_status }}"
+      guest_artifact_removed: "{{ mde_client_onboard_safe_result.guest_artifact_removed }}"
+  when:
+    - mde_client_onboard_safe_result is defined
+    - mde_client_onboard_safe_result.onboarding_state | int == 1
+    - mde_client_onboard_safe_result.sense_status == 'Running'
+    - mde_client_onboard_safe_result.guest_artifact_removed | bool

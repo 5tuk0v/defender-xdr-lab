@@ -1,0 +1,10 @@
+---
+# Leave empty for a zero-input local deployment. Set once in the applied range
+# config before deployment to automate the tenant-specific lab UPNs.
+hybrid_identity_upn_suffix: ""
+hybrid_identity_scope_group: Entra Sync Scope
+hybrid_identity_scope_member_groups:
+  - Hybrid Lab Users
+# Optional existing domain computer accounts to move into the sync OU and add
+# directly to the pilot-filter group.
+hybrid_identity_scope_computers: []

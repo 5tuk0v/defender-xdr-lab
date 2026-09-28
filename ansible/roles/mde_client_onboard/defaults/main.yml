@@ -1,0 +1,6 @@
+---
+# The role clearly skips when the Defender portal-generated script is absent
+# and never waits for Defender portal convergence.
+mde_client_onboard_controller_artifact_path: >-
+  {{ role_path | dirname | dirname }}/defender-xdr-lab-protected/WindowsDefenderATPLocalOnboardingScript.cmd
+mde_client_onboard_guest_artifact_path: C:\\Windows\\Temp\\DefenderXdrMdeOnboarding.cmd

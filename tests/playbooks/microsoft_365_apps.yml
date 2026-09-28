@@ -1,0 +1,6 @@
+---
+- name: Syntax-check the Microsoft 365 Apps role
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: microsoft_365_apps

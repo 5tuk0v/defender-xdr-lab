@@ -1,0 +1,122 @@
+---
+- name: Validate sample-submission sinkhole variables
+  ansible.builtin.assert:
+    that:
+      - sample_submission_sinkhole_enabled is boolean
+      - sample_submission_sinkhole_address == '0.0.0.0'
+      - sample_submission_sinkhole_list_version | length > 0
+      - sample_submission_sinkhole_canonical_domains is iterable
+      - sample_submission_sinkhole_additional_domains is iterable
+      - sample_submission_sinkhole_excluded_domains is iterable
+      - >-
+        (sample_submission_sinkhole_canonical_domains
+        + sample_submission_sinkhole_additional_domains
+        + sample_submission_sinkhole_excluded_domains)
+        | select('match', '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$')
+        | list
+        | length
+        == (sample_submission_sinkhole_canonical_domains
+        + sample_submission_sinkhole_additional_domains
+        + sample_submission_sinkhole_excluded_domains)
+        | length
+    fail_msg: >-
+      Domains must be non-empty DNS hostnames. This role supports only the
+      reviewed exact-name hosts-file control.
+
+- name: Calculate the sample-submission sinkhole domain set
+  ansible.builtin.set_fact:
+    sample_submission_sinkhole_domains: >-
+      {{ ((((sample_submission_sinkhole_canonical_domains
+      + sample_submission_sinkhole_additional_domains)
+      | map('lower') | unique | list)
+      | difference(sample_submission_sinkhole_excluded_domains
+      | map('lower') | list)))
+      if sample_submission_sinkhole_enabled else [] }}
+
+- name: Inspect entries owned by the sample-submission sinkhole role
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+      $marker = '{{ sample_submission_sinkhole_marker | replace("'", "''") }}'
+      $address = '{{ sample_submission_sinkhole_address }}'
+      $desired = @('{{ sample_submission_sinkhole_domains | join("','") }}') |
+        Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() }
+      $pattern = '^\s*(\S+)\s+(\S+)\s+#\s*' +
+        [regex]::Escape($marker) + '\s*$'
+      $owned = @(Get-Content -LiteralPath $hostsPath | ForEach-Object {
+        if ($_ -match $pattern) {
+          [pscustomobject]@{
+            Address = $Matches[1]
+            Domain = $Matches[2].ToLowerInvariant()
+          }
+        }
+      })
+      $removeDomains = @($owned | Group-Object Domain | Where-Object {
+        $_.Name -notin $desired -or
+        $_.Count -ne 1 -or
+        $_.Group[0].Address -ne $address
+      } | ForEach-Object { $_.Name })
+      $Ansible.Result = @{
+        owned_domains = @($owned | ForEach-Object { $_.Domain })
+        remove_domains = $removeDomains
+      }
+      $Ansible.Changed = $false
+  changed_when: false
+  register: sample_submission_sinkhole_inspection
+
+- name: Remove stale entries owned by the sample-submission sinkhole role
+  community.windows.win_lineinfile:
+    path: C:\Windows\System32\drivers\etc\hosts
+    regexp: >-
+      ^\s*\S+\s+{{ item | regex_escape }}\s+#
+      {{ sample_submission_sinkhole_marker | regex_escape }}\s*$
+    state: absent
+  loop: "{{ sample_submission_sinkhole_inspection.result.remove_domains }}"
+  notify: Flush Windows DNS cache
+
+- name: Apply the requested sample-submission sinkhole entries
+  community.windows.win_lineinfile:
+    path: C:\Windows\System32\drivers\etc\hosts
+    regexp: >-
+      ^\s*0\.0\.0\.0\s+{{ item | regex_escape }}\s+#
+      {{ sample_submission_sinkhole_marker | regex_escape }}\s*$
+    line: >-
+      {{ sample_submission_sinkhole_address }} {{ item }} #
+      {{ sample_submission_sinkhole_marker }}
+    state: present
+  loop: "{{ sample_submission_sinkhole_domains }}"
+  notify: Flush Windows DNS cache
+
+- name: Validate and report sample-submission sinkhole state
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+      $marker = '{{ sample_submission_sinkhole_marker | replace("'", "''") }}'
+      $address = '{{ sample_submission_sinkhole_address }}'
+      $desired = @('{{ sample_submission_sinkhole_domains | join("','") }}') |
+        Where-Object { $_ }
+      $owned = Get-Content -LiteralPath $hostsPath | Where-Object {
+        $_ -match ('^\s*' + [regex]::Escape($address) + '\s+(\S+)\s+#\s*' + [regex]::Escape($marker) + '\s*$')
+      } | ForEach-Object {
+        if ($_ -match ('^\s*' + [regex]::Escape($address) + '\s+(\S+)\s+#\s*' + [regex]::Escape($marker) + '\s*$')) {
+          $Matches[1].ToLowerInvariant()
+        }
+      }
+      $missing = @($desired | Where-Object { $_.ToLowerInvariant() -notin $owned })
+      $unexpected = @($owned | Where-Object { $_ -notin ($desired | ForEach-Object { $_.ToLowerInvariant() }) })
+      $duplicates = @($owned | Group-Object | Where-Object Count -gt 1 |
+        ForEach-Object Name)
+      if ($missing.Count -gt 0 -or $unexpected.Count -gt 0 -or $duplicates.Count -gt 0) {
+        throw "Managed hosts entries differ from requested state. Missing: $($missing -join ', '); unexpected: $($unexpected -join ', '); duplicates: $($duplicates -join ', ')"
+      }
+      $Ansible.Result = @{
+        list_version = '{{ sample_submission_sinkhole_list_version | replace("'", "''") }}'
+        enabled = ${{ sample_submission_sinkhole_enabled | lower }}
+        managed_domains = @($desired)
+        canonical_domains_excluded = @('{{ sample_submission_sinkhole_excluded_domains | join("','") }}') | Where-Object { $_ }
+        additional_domains = @('{{ sample_submission_sinkhole_additional_domains | join("','") }}') | Where-Object { $_ }
+      }
+      $Ansible.Changed = $false
+  changed_when: false

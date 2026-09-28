@@ -1,0 +1,6 @@
+---
+- name: Syntax-check the source-local sample-submission safeguard
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: sample_submission_sinkhole

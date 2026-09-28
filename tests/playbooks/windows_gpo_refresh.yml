@@ -1,0 +1,6 @@
+---
+- name: Syntax-check the computer Group Policy refresh role
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: windows_gpo_refresh

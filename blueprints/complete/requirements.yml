@@ -1,0 +1,13 @@
+---
+roles:
+  - name: 5tuk0v.ludus_asr_presets
+    version: v0.1.0
+  - name: badsectorlabs.ludus_adcs
+    src: https://github.com/badsectorlabs/ludus_adcs
+    version: 1.6.0
+collections:
+  - name: badsectorlabs.ludus_windows_utils
+    version: 1.2.0
+  # Pinned BSL roles call microsoft.ad modules but do not install it.
+  - name: microsoft.ad
+    version: 1.8.0

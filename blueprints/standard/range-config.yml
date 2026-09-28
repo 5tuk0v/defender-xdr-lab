@@ -1,0 +1,142 @@
+# yamllint disable-line rule:line-length
+# yaml-language-server: $schema=https://docs.ludus.cloud/schemas/range-config.json
+---
+
+# Four-host workstation comparison topology. ASR presets are pinned in requirements.yml.
+ludus:
+  - vm_name: "{{ range_id }}-dc01-mde"
+    hostname: DC01
+    template: win2022-server-x64-template
+    vlan: 10
+    ip_last_octet: 10
+    ram_gb: 6
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: defender.test
+      role: primary-dc
+    ansible_groups:
+      - mde_targets
+    roles:
+      - 5tuk0v.endpoint_sample_policy
+      - 5tuk0v.sample_submission_sinkhole
+      - 5tuk0v.controlled_folder_access_policy
+      - 5tuk0v.credential_guard_policy
+      - 5tuk0v.defender_baseline
+      - 5tuk0v.ludus_asr_presets
+      - 5tuk0v.windows_gpo_refresh
+      - 5tuk0v.mdi_sensor_performance
+      - 5tuk0v.mde_windows_host_prep
+      - 5tuk0v.azure_arc_onboard
+    role_vars:
+      endpoint_sample_policy_state: blocked
+      controlled_folder_access_policy_state: native
+      credential_guard_policy_state: native
+      defender_baseline_enabled: true
+      ludus_asr_presets_preset: windows_server_2022
+      ludus_asr_presets_mode: audit
+      mdi_sensor_performance_enabled: true
+      mde_windows_host_prep_enabled: true
+    testing:
+      snapshot: true
+      block_internet: true
+
+  - vm_name: "{{ range_id }}-srv01-mde"
+    hostname: SRV01
+    template: win2022-server-x64-template
+    vlan: 10
+    ip_last_octet: 20
+    ram_gb: 6
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: defender.test
+      role: member
+    ansible_groups:
+      - mde_targets
+    roles:
+      - 5tuk0v.ludus_asr_presets
+      - 5tuk0v.sample_submission_sinkhole
+      - 5tuk0v.windows_gpo_refresh
+      - 5tuk0v.mde_windows_host_prep
+      - 5tuk0v.azure_arc_onboard
+    role_vars:
+      ludus_asr_presets_preset: windows_server_2022
+      ludus_asr_presets_mode: audit
+      mde_windows_host_prep_enabled: true
+    testing:
+      snapshot: true
+      block_internet: true
+
+  - vm_name: "{{ range_id }}-wks01"
+    hostname: WKS01
+    template: win11-25h2-x64-enterprise-template
+    vlan: 10
+    ip_last_octet: 30
+    ram_gb: 4
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: defender.test
+      role: member
+    roles:
+      - 5tuk0v.ludus_asr_presets
+      - 5tuk0v.sample_submission_sinkhole
+      - 5tuk0v.microsoft_365_apps
+      - 5tuk0v.windows_gpo_refresh
+    role_vars:
+      ludus_asr_presets_preset: windows_11_25h2
+      ludus_asr_presets_mode: audit
+      microsoft_365_apps_enabled: true
+    testing:
+      snapshot: true
+      block_internet: true
+
+  - vm_name: "{{ range_id }}-wks02-mde"
+    hostname: WKS02
+    template: win11-25h2-x64-enterprise-template
+    vlan: 10
+    ip_last_octet: 40
+    ram_gb: 4
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: defender.test
+      role: member
+    ansible_groups:
+      - mde_targets
+    roles:
+      - 5tuk0v.ludus_asr_presets
+      - 5tuk0v.sample_submission_sinkhole
+      - 5tuk0v.microsoft_365_apps
+      - 5tuk0v.windows_gpo_refresh
+      - 5tuk0v.mde_windows_host_prep
+      - 5tuk0v.mde_client_onboard
+    role_vars:
+      ludus_asr_presets_preset: windows_11_25h2
+      ludus_asr_presets_mode: audit
+      microsoft_365_apps_enabled: true
+      mde_windows_host_prep_enabled: true
+    testing:
+      snapshot: true
+      block_internet: true
+
+network:
+  inter_vlan_default: REJECT
+
+defaults:
+  snapshot_with_RAM: true
+  stale_hours: 0
+  ad_domain_functional_level: WinThreshold
+  ad_forest_functional_level: WinThreshold
+  ad_domain_admin: domainadmin
+  ad_domain_admin_password: password
+  ad_domain_user: domainuser
+  ad_domain_user_password: password
+  ad_domain_safe_mode_password: password
+  timezone: America/Toronto
+  enable_dynamic_wallpaper: true

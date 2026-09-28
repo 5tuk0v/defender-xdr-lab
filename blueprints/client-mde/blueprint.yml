@@ -1,0 +1,15 @@
+---
+manifest_version: 1
+id: client-mde
+name: Defender XDR Lab - Client MDE
+description: >-
+  Three-host Active Directory lab with matched Windows clients for phased MDE
+  testing, without Azure Arc, server MDE, or MDI.
+version: 0.1.0
+config: range-config.yml
+tags:
+  - active-directory
+  - defender
+  - mde
+  - windows
+  - xdr

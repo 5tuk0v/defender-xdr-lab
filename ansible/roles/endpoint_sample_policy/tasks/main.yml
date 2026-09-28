@@ -1,0 +1,85 @@
+---
+- name: Validate endpoint sample-policy variables
+  ansible.builtin.assert:
+    that:
+      - endpoint_sample_policy_state in ['blocked', 'native']
+      - endpoint_sample_policy_gpo_name | length > 0
+    fail_msg: Use a supported state and non-empty GPO name.
+
+- name: Resolve the Ludus domain-administrator context
+  ansible.builtin.set_fact:
+    endpoint_sample_policy_ludus_host: "{{ ludus | selectattr('vm_name', 'equalto', inventory_hostname) | list | first }}"
+
+- name: Validate the Ludus domain-administrator context
+  ansible.builtin.assert:
+    that:
+      - defaults is mapping
+      - defaults.ad_domain_admin is defined
+      - defaults.ad_domain_admin | length > 0
+      - defaults.ad_domain_admin_password is defined
+      - defaults.ad_domain_admin_password | length > 0
+      - endpoint_sample_policy_ludus_host.domain.role == 'primary-dc'
+      - endpoint_sample_policy_ludus_host.domain.fqdn | length > 0
+    fail_msg: The endpoint sample policy requires the primary DC and Ludus defaults domain-administrator credentials.
+  no_log: true
+
+- name: Configure the security-filtered endpoint sample-policy GPO
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory -ErrorAction Stop
+      Import-Module GroupPolicy -ErrorAction Stop
+      if ($env:USERNAME -ine '{{ defaults.ad_domain_admin | replace("'", "''") }}' -or $env:USERDNSDOMAIN -ine '{{ endpoint_sample_policy_ludus_host.domain.fqdn | replace("'", "''") }}') {
+        throw "GPO mutation is not running as the configured Ludus domain administrator."
+      }
+
+      $state = '{{ endpoint_sample_policy_state }}'
+      $gpoName = '{{ endpoint_sample_policy_gpo_name | replace("'", "''") }}'
+      $domain = Get-ADDomain -ErrorAction Stop
+      $changed = $false
+
+      $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
+      if ($null -eq $gpo) {
+        $gpo = New-GPO -Name $gpoName -Comment 'Role-owned endpoint sample-transfer policy.' -ErrorAction Stop
+        $changed = $true
+      }
+      $link = (Get-GPInheritance -Target $domain.DistinguishedName).GpoLinks |
+        Where-Object { $_.DisplayName -eq $gpoName } | Select-Object -First 1
+      if ($null -eq $link) {
+        New-GPLink -Name $gpoName -Target $domain.DistinguishedName -LinkEnabled Yes -ErrorAction Stop | Out-Null
+        $changed = $true
+      }
+
+      Set-GPPermission -Name $gpoName -TargetName 'Authenticated Users' -TargetType Group -PermissionLevel GpoApply -Replace -ErrorAction Stop
+
+      $settings = @(
+        @{ Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'; ValueName = 'SubmitSamplesConsent'; Value = 2 },
+        @{ Key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'; ValueName = 'AllowSampleCollection'; Value = 0 }
+      )
+      foreach ($setting in $settings) {
+        $current = Get-GPRegistryValue -Name $gpoName -Key $setting.Key -ValueName $setting.ValueName -ErrorAction SilentlyContinue
+        if ($state -eq 'blocked') {
+          if ($null -eq $current -or [int]$current.Value -ne $setting.Value) {
+            Set-GPRegistryValue -Name $gpoName -Key $setting.Key -ValueName $setting.ValueName -Type DWord -Value $setting.Value -ErrorAction Stop | Out-Null
+            $changed = $true
+          }
+        } elseif ($null -ne $current) {
+          Remove-GPRegistryValue -Name $gpoName -Key $setting.Key -ValueName $setting.ValueName -ErrorAction Stop
+          $changed = $true
+        }
+      }
+
+      $Ansible.Changed = $changed
+      $Ansible.Result = @{ state = $state; gpo = $gpoName; scope = 'Authenticated Users'; domain = $domain.DNSRoot }
+  register: endpoint_sample_policy_result
+  become: true
+  become_method: runas
+  become_user: "{{ defaults.ad_domain_admin }}@{{ endpoint_sample_policy_ludus_host.domain.fqdn }}"
+  vars:
+    ansible_become_password: "{{ defaults.ad_domain_admin_password }}"
+
+- name: Report endpoint sample-policy GPO state
+  ansible.builtin.debug:
+    msg: >-
+      Endpoint sample policy is {{ endpoint_sample_policy_state }} for
+      all domain computers through {{ endpoint_sample_policy_gpo_name }}.

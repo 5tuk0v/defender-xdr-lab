@@ -1,0 +1,12 @@
+---
+dependencies: []
+
+galaxy_info:
+  role_name: sample_submission_sinkhole
+  author: 5tuk0v
+  description: Manage marked Windows hosts entries for reviewed public-analysis domains
+  license: MIT
+  min_ansible_version: "2.16"
+collections:
+  - ansible.windows
+  - community.windows

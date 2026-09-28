@@ -1,0 +1,113 @@
+# yamllint disable-line rule:line-length
+# yaml-language-server: $schema=https://docs.ludus.cloud/schemas/range-config.json
+---
+
+# Deliberately vulnerable AD CS scenario. It is independent from every baseline.
+ludus:
+  - vm_name: "{{ range_id }}-dc01-mde"
+    hostname: DC01
+    template: win2022-server-x64-template
+    vlan: 10
+    ip_last_octet: 10
+    ram_gb: 6
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: defender.test
+      role: primary-dc
+    ansible_groups:
+      - mde_targets
+    roles:
+      - 5tuk0v.endpoint_sample_policy
+      - 5tuk0v.sample_submission_sinkhole
+      - 5tuk0v.controlled_folder_access_policy
+      - 5tuk0v.credential_guard_policy
+      - 5tuk0v.defender_baseline
+      - 5tuk0v.ludus_asr_presets
+      - 5tuk0v.mdi_sensor_performance
+      - 5tuk0v.windows_gpo_refresh
+      - 5tuk0v.mde_windows_host_prep
+      - 5tuk0v.azure_arc_onboard
+    role_vars:
+      endpoint_sample_policy_state: blocked
+      controlled_folder_access_policy_state: native
+      credential_guard_policy_state: native
+      defender_baseline_enabled: true
+      ludus_asr_presets_preset: windows_server_2022
+      ludus_asr_presets_mode: audit
+      mde_windows_host_prep_enabled: true
+      mdi_sensor_performance_enabled: true
+    testing:
+      snapshot: true
+      block_internet: true
+
+  - vm_name: "{{ range_id }}-ca01-mde"
+    hostname: CA01
+    template: win2022-server-x64-template
+    vlan: 10
+    ip_last_octet: 20
+    ram_gb: 6
+    cpus: 2
+    windows:
+      sysprep: true
+    domain:
+      fqdn: defender.test
+      role: member
+    ansible_groups:
+      - mde_targets
+    roles:
+      - badsectorlabs.ludus_adcs
+      - 5tuk0v.ludus_asr_presets
+      - 5tuk0v.mdi_adcs_host_prep
+      - 5tuk0v.mdi_sensor_performance
+      - 5tuk0v.sample_submission_sinkhole
+      - 5tuk0v.windows_gpo_refresh
+      - 5tuk0v.mde_windows_host_prep
+      - 5tuk0v.azure_arc_onboard
+    role_vars:
+      ludus_asr_presets_preset: windows_server_2022
+      ludus_asr_presets_mode: audit
+      ludus_adcs_ca_common_name: defender-CA
+      # Freeze the pinned BSL 1.6.0 scenario rather than relying on implicit defaults.
+      ludus_adcs_esc1: true
+      ludus_adcs_esc2: true
+      ludus_adcs_esc3: true
+      ludus_adcs_esc3_cra: true
+      ludus_adcs_esc4: true
+      ludus_adcs_esc5: true
+      ludus_adcs_esc6: true
+      ludus_adcs_esc7: true
+      ludus_adcs_esc8: true
+      ludus_adcs_esc9: true
+      ludus_adcs_esc10: true
+      ludus_adcs_esc10_case1: true
+      ludus_adcs_esc10_case2: true
+      ludus_adcs_esc11: true
+      ludus_adcs_esc13: true
+      ludus_adcs_esc14: true
+      ludus_adcs_esc15: true
+      ludus_adcs_esc16: true
+      mdi_adcs_host_prep_enabled: true
+      mdi_adcs_host_prep_audit_filter: 127
+      mdi_sensor_performance_enabled: true
+      mde_windows_host_prep_enabled: true
+    testing:
+      snapshot: true
+      block_internet: true
+
+network:
+  inter_vlan_default: REJECT
+
+defaults:
+  snapshot_with_RAM: true
+  stale_hours: 0
+  ad_domain_functional_level: WinThreshold
+  ad_forest_functional_level: WinThreshold
+  ad_domain_admin: domainadmin
+  ad_domain_admin_password: password
+  ad_domain_user: domainuser
+  ad_domain_user_password: password
+  ad_domain_safe_mode_password: password
+  timezone: America/Toronto
+  enable_dynamic_wallpaper: true

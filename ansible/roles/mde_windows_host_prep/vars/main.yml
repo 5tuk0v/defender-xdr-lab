@@ -1,0 +1,12 @@
+---
+# Internal role contract. Microsoft's fixed architecture-specific KB4052623
+# redirect serves a changing monthly package.
+_mde_windows_host_prep_platform_url: >-
+  https://go.microsoft.com/fwlink/?LinkID=870379&arch=x64&clcid=0x409
+_mde_windows_host_prep_platform_path: C:\ludus\updateplatform.exe
+_mde_windows_host_prep_manual_update_baseline: 4.18.2001.10
+
+# Defender for Endpoint streamlined-connectivity minimums.
+_mde_windows_host_prep_minimum_platform_version: 4.18.2211.5
+_mde_windows_host_prep_minimum_engine_version: 1.1.19900.2
+_mde_windows_host_prep_minimum_security_intelligence_version: 1.391.345.0

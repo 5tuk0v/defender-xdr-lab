@@ -1,0 +1,7 @@
+---
+- name: Syntax-check the Azure Arc onboarding role
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: azure_arc_onboard

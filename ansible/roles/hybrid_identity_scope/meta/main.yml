@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: hybrid_identity_scope
+  author: 5tuk0v
+  description: Reconcile hybrid identity and device sync scope plus optional UPNs
+  license: MIT
+  min_ansible_version: "2.16"
+dependencies: []

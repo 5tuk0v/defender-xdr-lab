@@ -1,0 +1,4 @@
+---
+- name: Flush Windows DNS cache
+  ansible.windows.win_command: ipconfig.exe /flushdns
+  changed_when: false

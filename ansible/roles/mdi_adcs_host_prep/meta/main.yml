@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: mdi_adcs_host_prep
+  author: 5tuk0v
+  description: Prepare and validate a dedicated AD CS host for the MDI v3 sensor
+  license: MIT
+  min_ansible_version: "2.16"
+dependencies: []

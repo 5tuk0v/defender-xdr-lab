@@ -1,0 +1,142 @@
+---
+- name: Keep Windows Time available for domain synchronization
+  ansible.windows.win_service:
+    name: W32Time
+    start_mode: auto
+    state: started
+  when: mdi_adcs_host_prep_enabled
+
+- name: Configure and validate MDI v3 readiness on the certification authority
+  ansible.windows.win_powershell:
+    script: |
+      [CmdletBinding()]
+      param ([Parameter(Mandatory = $true)][Int32]$RequiredAuditFilter)
+
+      $ErrorActionPreference = 'Stop'
+      $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem
+      if (-not $computerSystem.PartOfDomain -or $computerSystem.DomainRole -ne 3) {
+        throw 'The MDI v3 AD CS target must be a domain-member server and not a domain controller.'
+      }
+
+      $caFeature = Get-WindowsFeature -Name ADCS-Cert-Authority
+      if (-not $caFeature -or $caFeature.InstallState -ne 'Installed') {
+        throw 'The AD CS Certification Authority Role Service is not installed.'
+      }
+
+      $timeService = Get-Service -Name W32Time -ErrorAction Stop
+      if ($timeService.Status -ne 'Running') {
+        throw 'Windows Time is not running; MDI requires the sensor and domain controllers to remain within five minutes.'
+      }
+
+      if (-not ('MdiAuditPolicy.NativeMethods' -as [type])) {
+        Add-Type -TypeDefinition @'
+      using System;
+      using System.Runtime.InteropServices;
+      namespace MdiAuditPolicy {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct AuditPolicyInformation {
+          public Guid AuditSubCategoryGuid;
+          public UInt32 AuditingInformation;
+          public Guid AuditCategoryGuid;
+        }
+        public static class NativeMethods {
+          [DllImport("advapi32.dll", SetLastError = true)]
+          public static extern bool AuditQuerySystemPolicy(
+            [In] Guid[] subCategoryGuids,
+            UInt32 policyCount,
+            out IntPtr auditPolicy
+          );
+          [DllImport("advapi32.dll", SetLastError = true)]
+          public static extern bool AuditFree(IntPtr buffer);
+        }
+      }
+      '@
+      }
+
+      function Get-CertificationServicesAuditPolicy {
+        $subcategory = [Guid]'0CCE9221-69AE-11D9-BED3-505054503030'
+        $buffer = [IntPtr]::Zero
+        $ok = [MdiAuditPolicy.NativeMethods]::AuditQuerySystemPolicy(
+          @($subcategory),
+          1,
+          [ref]$buffer
+        )
+        if (-not $ok) {
+          $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+          throw "Unable to query Certification Services audit policy (Win32 $errorCode)."
+        }
+        try {
+          return [Runtime.InteropServices.Marshal]::PtrToStructure(
+            $buffer,
+            [type][MdiAuditPolicy.AuditPolicyInformation]
+          ).AuditingInformation
+        } finally {
+          [void][MdiAuditPolicy.NativeMethods]::AuditFree($buffer)
+        }
+      }
+
+      $auditBefore = Get-CertificationServicesAuditPolicy
+      $auditChanged = (($auditBefore -band 3) -ne 3)
+      if ($auditChanged) {
+        & auditpol.exe /set '/subcategory:{0CCE9221-69AE-11D9-BED3-505054503030}' /success:enable /failure:enable | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          throw 'Unable to enable Success and Failure auditing for Certification Services.'
+        }
+      }
+
+      $configurationPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration'
+      $activeCa = Get-ItemPropertyValue -Path $configurationPath -Name Active -ErrorAction Stop
+      $activeCaPath = Join-Path $configurationPath $activeCa
+      # A new CA commonly has no AuditFilter value. Get-ItemPropertyValue treats
+      # that absence as an error, so inspect the available property collection
+      # and deliberately model absence as an unconfigured value.
+      $activeCaProperties = Get-ItemProperty -Path $activeCaPath -ErrorAction Stop
+      $auditFilterProperty = $activeCaProperties.PSObject.Properties['AuditFilter']
+      $auditFilterBefore = if ($null -eq $auditFilterProperty) {
+        $null
+      } else {
+        $auditFilterProperty.Value
+      }
+      $filterChanged = $null -eq $auditFilterBefore -or ([int]$auditFilterBefore -ne $RequiredAuditFilter)
+      $serviceChanged = $false
+      if ($filterChanged) {
+        & certutil.exe -setreg 'CA\AuditFilter' $RequiredAuditFilter | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          throw 'Unable to configure the AD CS audit filter.'
+        }
+        Restart-Service -Name CertSvc -Force
+      } else {
+        $service = Get-Service -Name CertSvc -ErrorAction Stop
+        if ($service.Status -ne 'Running') {
+          Start-Service -Name CertSvc
+          $serviceChanged = $true
+        }
+      }
+
+      $auditAfter = Get-CertificationServicesAuditPolicy
+      $auditFilterAfter = Get-ItemPropertyValue -Path $activeCaPath -Name AuditFilter -ErrorAction Stop
+      $serviceAfter = Get-Service -Name CertSvc -ErrorAction Stop
+      if (($auditAfter -band 3) -ne 3) {
+        throw 'Certification Services Success and Failure auditing did not validate.'
+      }
+      if ([int]$auditFilterAfter -ne $RequiredAuditFilter) {
+        throw "The AD CS audit filter did not validate as $RequiredAuditFilter."
+      }
+      if ($serviceAfter.Status -ne 'Running') {
+        throw 'The Certificate Services service is not running after prerequisite configuration.'
+      }
+
+      $Ansible.Result = @{
+        server_role = 'domain-member certification authority'
+        ca = $activeCa
+        certsvc_status = $serviceAfter.Status.ToString()
+        certification_services_audit_success = $true
+        certification_services_audit_failure = $true
+        ca_audit_filter_was_missing = $null -eq $auditFilterBefore
+        ca_audit_filter = [int]$auditFilterAfter
+        windows_time_status = $timeService.Status.ToString()
+      }
+      $Ansible.Changed = $auditChanged -or $filterChanged -or $serviceChanged
+    parameters:
+      RequiredAuditFilter: "{{ mdi_adcs_host_prep_audit_filter }}"
+  when: mdi_adcs_host_prep_enabled

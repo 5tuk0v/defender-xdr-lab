@@ -1,0 +1,8 @@
+---
+hybrid_identity_host_prep_enabled: true
+
+# AzureADConnect.msi is generic but Microsoft distributes it through the Entra
+# admin center. If the operator places it here, the role stages and verifies it.
+hybrid_identity_host_prep_connect_installer_controller_path: >-
+  {{ role_path | dirname | dirname }}/defender-xdr-lab-protected/AzureADConnect.msi
+hybrid_identity_host_prep_connect_installer_guest_path: C:\ludus\AzureADConnect.msi

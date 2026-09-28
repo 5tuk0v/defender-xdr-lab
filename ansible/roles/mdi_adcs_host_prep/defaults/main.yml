@@ -1,0 +1,4 @@
+---
+# Stable local readiness for an MDI v3 sensor on a dedicated AD CS server.
+mdi_adcs_host_prep_enabled: true
+mdi_adcs_host_prep_audit_filter: 127

@@ -1,0 +1,6 @@
+---
+- name: Syntax-check the MDE Windows host preparation role
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: mde_windows_host_prep
