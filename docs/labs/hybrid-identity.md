@@ -122,7 +122,9 @@ Connect > Get started > Manage** and download the latest `AzureADConnect.msi`.
    - sign in with a tenant-local **Hybrid Identity Administrator**;
    - add `defender.test`, choose **Create new account**, and temporarily provide
      AD DS **Enterprise Administrator** credentials;
-   - keep `userPrincipalName` and confirm both users have the verified suffix;
+   - keep `userPrincipalName`, confirm both users have the verified suffix, and
+     select **Continue without matching all UPN suffixes to verified domains**
+     (`defender.test` is the lab's unverified internal suffix);
    - select only `OU=EntraSync,DC=defender,DC=test` and its children;
    - filter by `CN=Entra Sync Scope,OU=Groups,OU=EntraSync,DC=defender,DC=test`;
    - on **Optional features**, keep PHS selected and leave writeback,

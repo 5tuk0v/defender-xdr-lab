@@ -1,16 +1,12 @@
 # Server MDE
 
-> Current version: **1.3.2** · Last tested version: **1.3.0**.
+> Current version: **1.3.2** · Last tested version: **1.3.2**.
 
 Deploy the three-host Defender lab with server MDE and DC01 MDI.
 Client MDE entitlement is not required.
 
-The 1.3.0 run passed local provisioning; cloud commissioning was not performed
-in that run.
-
-Since 1.3.0, DC01 gained Server 2022 ASR Audit and the diagnostic-only state
-report was removed. `complete` 0.1.3 exercised the shared DC01 role path; this
-blueprint version has not been deployed.
+Version 1.3.2 completed local provisioning. Cloud commissioning and practical
+test cases were not performed as part of that deployment.
 
 ## What it builds
 
