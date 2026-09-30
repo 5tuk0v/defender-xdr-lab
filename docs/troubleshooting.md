@@ -63,6 +63,28 @@ failure observed after onboarding. This creates a new MDE identity for DC01.
    deployment. CA01 and SYNC01 can appear later than DC01.
 4. When the server appears in **Sensor management**, activate it.
 
+## Defender combines identities from repeated lab deployments
+
+Repeatedly deploying a new AD forest with the same domain name, usernames, and
+UPNs can leave historical domains and accounts in the Defender tenant. Defender
+can aggregate accounts from different forest instances into one `StrongId`
+account set. Destroying the range does not immediately remove this cloud identity
+history.
+
+Symptoms can include:
+
+- duplicate domain or identity search results with different SIDs;
+- an identity summary showing an old SID while the current SID appears under
+  **Observed in organization > Accounts**;
+- a current account missing from a Defender selector, such as **User automation
+  exclusions**; or
+- individual `StrongId` accounts being unavailable for manual unlinking.
+
+1. Compare the domain SID and account SID to identify the current deployment.
+2. If Defender aggregated the current account with historical accounts, create a
+   uniquely named AD account for any testing or portal action that must target
+   the current deployment.
+
 ## I get no PRT after signing in
 
 1. Complete Entra Connect setup in your runbook. In Entra **Entra ID > Users**
